@@ -249,6 +249,7 @@ OBJS-$(CONFIG_AURA_DECODER)            += cyuv.o
 OBJS-$(CONFIG_AURA2_DECODER)           += aura.o
 OBJS-$(CONFIG_AV1_DECODER)             += av1dec.o
 OBJS-$(CONFIG_AV1_CUVID_DECODER)       += cuviddec.o
+OBJS-$(CONFIG_AV1_MEDIACODEC_DECODER)  += mediacodecdec.o
 OBJS-$(CONFIG_AV1_NVENC_ENCODER)       += nvenc_av1.o nvenc.o
 OBJS-$(CONFIG_AV1_QSV_ENCODER)         += qsvenc_av1.o
 OBJS-$(CONFIG_AVRN_DECODER)            += avrndec.o
@@ -1251,6 +1252,7 @@ SKIPHEADERS                            += %_tablegen.h                  \
                                           aaccoder_trellis.h            \
                                           aacenc_quantization.h         \
                                           aacenc_quantization_misc.h    \
+                                          bitstream_template.h          \
                                           $(ARCH)/vpx_arith.h          \
 
 SKIPHEADERS-$(CONFIG_AMF)              += amfenc.h
@@ -1277,6 +1279,8 @@ SKIPHEADERS-$(CONFIG_ZLIB)             += zlib_wrapper.h
 
 TESTPROGS = avcodec                                                     \
             avpacket                                                    \
+            bitstream_be                                                \
+            bitstream_le                                                \
             celp_math                                                   \
             codec_desc                                                  \
             htmlsubtitles                                               \
