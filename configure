@@ -1710,27 +1710,27 @@ COMPONENT_LIST="
 "
 
 EXAMPLE_LIST="
+    avio_http_serve_files_example
     avio_list_dir_example
-    avio_reading_example
+    avio_read_callback_example
     decode_audio_example
+    decode_filter_audio_example
+    decode_filter_video_example
     decode_video_example
-    demuxing_decoding_example
+    demux_decode_example
     encode_audio_example
     encode_video_example
     extract_mvs_example
     filter_audio_example
-    filtering_audio_example
-    filtering_video_example
-    http_multiclient_example
     hw_decode_example
-    metadata_example
-    muxing_example
-    qsvdec_example
-    remuxing_example
-    resampling_audio_example
-    scaling_video_example
+    mux_example
+    qsv_decode_example
+    remux_example
+    resample_audio_example
+    scale_video_example
+    show_metadata_example
     transcode_aac_example
-    transcoding_example
+    transcode_example
     vaapi_encode_example
     vaapi_transcode_example
     qsv_transcode_example
@@ -3774,27 +3774,27 @@ vstack_vaapi_filter_deps="vaapi_1"
 xstack_vaapi_filter_deps="vaapi_1"
 
 # examples
+avio_http_serve_files_deps="avformat avutil fork"
 avio_list_dir_deps="avformat avutil"
-avio_reading_deps="avformat avcodec avutil"
+avio_read_callback_deps="avformat avcodec avutil"
 decode_audio_example_deps="avcodec avutil"
+decode_filter_audio_example_deps="avfilter avcodec avformat avutil"
+decode_filter_video_example_deps="avfilter avcodec avformat avutil"
 decode_video_example_deps="avcodec avutil"
-demuxing_decoding_example_deps="avcodec avformat avutil"
+demux_decode_example_deps="avcodec avformat avutil"
 encode_audio_example_deps="avcodec avutil"
 encode_video_example_deps="avcodec avutil"
 extract_mvs_example_deps="avcodec avformat avutil"
 filter_audio_example_deps="avfilter avutil"
-filtering_audio_example_deps="avfilter avcodec avformat avutil"
-filtering_video_example_deps="avfilter avcodec avformat avutil"
-http_multiclient_example_deps="avformat avutil fork"
 hw_decode_example_deps="avcodec avformat avutil"
-metadata_example_deps="avformat avutil"
-muxing_example_deps="avcodec avformat avutil swscale"
-qsvdec_example_deps="avcodec avutil libmfx h264_qsv_decoder"
-remuxing_example_deps="avcodec avformat avutil"
-resampling_audio_example_deps="avutil swresample"
-scaling_video_example_deps="avutil swscale"
+mux_example_deps="avcodec avformat avutil swscale"
+qsv_decode_example_deps="avcodec avutil libmfx h264_qsv_decoder"
+remux_example_deps="avcodec avformat avutil"
+resample_audio_example_deps="avutil swresample"
+scale_video_example_deps="avutil swscale"
+show_metadata_example_deps="avformat avutil"
 transcode_aac_example_deps="avcodec avformat swresample"
-transcoding_example_deps="avfilter avcodec avformat avutil"
+transcode_example_deps="avfilter avcodec avformat avutil"
 vaapi_encode_example_deps="avcodec avutil h264_vaapi_encoder"
 vaapi_transcode_example_deps="avcodec avformat avutil h264_vaapi_encoder"
 qsv_transcode_example_deps="avcodec avformat avutil h264_qsv_encoder"
