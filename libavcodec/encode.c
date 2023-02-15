@@ -171,7 +171,12 @@ int avcodec_encode_subtitle(AVCodecContext *avctx, uint8_t *buf, int buf_size,
     }
 
     ret = ffcodec(avctx->codec)->cb.encode_sub(avctx, buf, buf_size, sub);
-    avctx->frame_number++;
+    avctx->frame_num++;
+#if FF_API_AVCTX_FRAME_NUMBER
+FF_DISABLE_DEPRECATION_WARNINGS
+    avctx->frame_number = avctx->frame_num;
+FF_ENABLE_DEPRECATION_WARNINGS
+#endif
     return ret;
 }
 
@@ -259,10 +264,9 @@ int ff_encode_encode_cb(AVCodecContext *avctx, AVPacket *avpkt,
 unref:
         av_packet_unref(avpkt);
     }
-#if !FF_API_THREAD_SAFE_CALLBACKS
+
     if (frame)
         av_frame_unref(frame);
-#endif
 
     return ret;
 }
@@ -303,10 +307,6 @@ static int encode_simple_internal(AVCodecContext *avctx, AVPacket *avpkt)
         ret = ff_thread_video_encode_frame(avctx, avpkt, frame, &got_packet);
     else {
         ret = ff_encode_encode_cb(avctx, avpkt, frame, &got_packet);
-#if FF_API_THREAD_SAFE_CALLBACKS
-        if (frame)
-            av_frame_unref(frame);
-#endif
     }
 
     if (avci->draining && !got_packet)
@@ -508,7 +508,12 @@ int attribute_align_arg avcodec_send_frame(AVCodecContext *avctx, const AVFrame 
             return ret;
     }
 
-    avctx->frame_number++;
+    avctx->frame_num++;
+#if FF_API_AVCTX_FRAME_NUMBER
+FF_DISABLE_DEPRECATION_WARNINGS
+    avctx->frame_number = avctx->frame_num;
+FF_ENABLE_DEPRECATION_WARNINGS
+#endif
 
     return 0;
 }

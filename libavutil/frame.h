@@ -451,14 +451,18 @@ typedef struct AVFrame {
      */
     AVRational time_base;
 
+#if FF_API_FRAME_PICTURE_NUMBER
     /**
      * picture number in bitstream order
      */
+    attribute_deprecated
     int coded_picture_number;
     /**
      * picture number in display order
      */
+    attribute_deprecated
     int display_picture_number;
+#endif
 
     /**
      * quality (between 1 (good) and FF_LAMBDA_MAX (bad))
@@ -725,15 +729,6 @@ typedef struct AVFrame {
 } AVFrame;
 
 
-#if FF_API_COLORSPACE_NAME
-/**
- * Get the name of a colorspace.
- * @return a static string identifying the colorspace; can be NULL.
- * @deprecated use av_color_space_name()
- */
-attribute_deprecated
-const char *av_get_colorspace_name(enum AVColorSpace val);
-#endif
 /**
  * Allocate an AVFrame and set its fields to default values.  The resulting
  * struct must be freed using av_frame_free().
