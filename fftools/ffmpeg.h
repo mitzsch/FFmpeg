@@ -333,6 +333,8 @@ typedef struct FilterGraph {
 } FilterGraph;
 
 typedef struct InputStream {
+    const AVClass *class;
+
     int file_index;
     AVStream *st;
     int discard;             /* true if stream data should be discarded */
@@ -377,21 +379,16 @@ typedef struct InputStream {
 
     int64_t filter_in_rescale_delta_last;
 
-    int64_t min_pts; /* pts with the smallest value in a current stream */
-    int64_t max_pts; /* pts with the higher value in a current stream */
-
     // when forcing constant input framerate through -r,
     // this contains the pts that will be given to the next decoded frame
     int64_t cfr_next_pts;
 
     int64_t nb_samples; /* number of samples in the last decoded audio frame before looping */
 
-    double ts_scale;
     int saw_first_ts;
     AVDictionary *decoder_opts;
     AVRational framerate;               /* framerate forced with -r */
     int top_field_first;
-    int guess_layout_max;
 
     int autorotate;
 
@@ -448,6 +445,8 @@ typedef struct LastFrameDuration {
 } LastFrameDuration;
 
 typedef struct InputFile {
+    const AVClass *class;
+
     int index;
 
     AVFormatContext *ctx;

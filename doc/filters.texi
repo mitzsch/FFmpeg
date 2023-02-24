@@ -16074,6 +16074,18 @@ Automatic selection based on internal heuristics. This is the default.
 Performs no tone-mapping, just clips out-of-range colors. Retains perfect color
 accuracy for in-range colors but completely destroys out-of-range information.
 Does not perform any black point adaptation. Not configurable.
+@item st2094-40
+EETF from SMPTE ST 2094-40 Annex B, which applies the Bezier curves from HDR10+
+dynamic metadata based on Bezier curves to perform tone-mapping. The OOTF used
+is adjusted based on the ratio between the targeted and actual display peak
+luminances.
+@item st2094-10
+EETF from SMPTE ST 2094-10 Annex B.2, which takes into account the input signal
+average luminance in addition to the maximum/minimum. The configurable contrast
+parameter influences the slope of the linear output segment, defaulting to
+@code{1.0} for no increase/decrease in contrast. Note that this does not
+currently include the subjective gain/offset/gamma controls defined in Annex
+B.3.
 @item bt.2390
 EETF from the ITU-R Report BT.2390, a hermite spline roll-off with linear
 segment. The knee point offset is configurable. Note that this parameter
@@ -26802,6 +26814,94 @@ See @ref{xstack}.
 
 @c man end VAAPI VIDEO FILTERS
 
+@chapter QSV Video Filters
+@c man begin QSV VIDEO FILTERS
+
+Below is a description of the currently available QSV video filters.
+
+To enable compilation of these filters you need to configure FFmpeg with
+@code{--enable-libmfx} or @code{--enable-libvpl}.
+
+To use QSV filters, you need to setup the QSV device correctly. For more information, please read @url{https://trac.ffmpeg.org/wiki/Hardware/QuickSync}
+
+@section hstack_qsv
+Stack input videos horizontally.
+
+This is the QSV variant of the @ref{hstack} filter, each input stream may
+have different height, this filter will scale down/up each input stream while
+keeping the orignal aspect.
+
+It accepts the following options:
+
+@table @option
+@item inputs
+See @ref{hstack}.
+
+@item shortest
+See @ref{hstack}.
+
+@item height
+Set height of output. If set to 0, this filter will set height of output to
+height of the first input stream. Default value is 0.
+@end table
+
+@section vstack_qsv
+Stack input videos vertically.
+
+This is the QSV variant of the @ref{vstack} filter, each input stream may
+have different width, this filter will scale down/up each input stream while
+keeping the orignal aspect.
+
+It accepts the following options:
+
+@table @option
+@item inputs
+See @ref{vstack}.
+
+@item shortest
+See @ref{vstack}.
+
+@item width
+Set width of output. If set to 0, this filter will set width of output to
+width of the first input stream. Default value is 0.
+@end table
+
+@section xstack_qsv
+Stack video inputs into custom layout.
+
+This is the QSV variant of the @ref{xstack} filter.
+
+It accepts the following options:
+
+@table @option
+@item inputs
+See @ref{xstack}.
+
+@item shortest
+See @ref{xstack}.
+
+@item layout
+See @ref{xstack}.
+Moreover, this permits the user to supply output size for each input stream.
+@example
+xstack_qsv=inputs=4:layout=0_0_1920x1080|0_h0_1920x1080|w0_0_1920x1080|w0_h0_1920x1080
+@end example
+
+@item grid
+See @ref{xstack}.
+
+@item grid_tile_size
+Set output size for each input stream when @option{grid} is set. If this option
+is not set, this filter will set output size by default to the size of the
+first input stream. For the syntax of this option, check the
+@ref{video size syntax,,"Video size" section in the ffmpeg-utils manual,ffmpeg-utils}.
+
+@item fill
+See @ref{xstack}.
+@end table
+
+@c man end QSV VIDEO FILTERS
+
 @chapter Video Sources
 @c man begin VIDEO SOURCES
 
@@ -26842,11 +26942,6 @@ Specify the frame rate expected for the video stream.
 
 @item pixel_aspect, sar
 The sample (pixel) aspect ratio of the input video.
-
-@item sws_param
-This option is deprecated and ignored. Prepend @code{sws_flags=@var{flags};}
-to the filtergraph description to specify swscale flags for automatically
-inserted scalers. See @ref{Filtergraph syntax}.
 
 @item hw_frames_ctx
 When using a hardware pixel format, this should be a reference to an
