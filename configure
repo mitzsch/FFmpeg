@@ -3836,7 +3836,7 @@ ffmpeg_select="aformat_filter anull_filter atrim_filter format_filter
                hflip_filter null_filter
                transpose_filter trim_filter vflip_filter"
 ffmpeg_suggest="ole32 psapi shell32"
-ffplay_deps="avcodec avformat swscale swresample sdl2"
+ffplay_deps="avcodec avformat avfilter swscale swresample sdl2"
 ffplay_select="rdft crop_filter transpose_filter hflip_filter vflip_filter rotate_filter"
 ffplay_suggest="shell32"
 ffprobe_deps="avcodec avformat"
@@ -7359,7 +7359,6 @@ enable frame_thread_encoder
 # they are kept disabled for now, but will be removed if
 # nobody updates and re-enables them
 disable mcdeint_filter
-disable uspp_filter
 
 enabled asm || { arch=c; disable $ARCH_LIST $ARCH_EXT_LIST; }
 
