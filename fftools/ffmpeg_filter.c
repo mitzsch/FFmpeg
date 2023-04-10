@@ -296,7 +296,6 @@ static void init_input_filter(FilterGraph *fg, AVFilterInOut *in)
 
     ist->discard         = 0;
     ist->decoding_needed |= DECODING_FOR_FILTER;
-    ist->processing_needed = 1;
     ist->st->discard = AVDISCARD_NONE;
 
     ifilter = ALLOC_ARRAY_ELEM(fg->inputs, fg->nb_inputs);
@@ -1242,14 +1241,6 @@ int configure_filtergraph(FilterGraph *fg)
     }
 
     fg->reconfiguration = 1;
-
-    for (i = 0; i < fg->nb_outputs; i++) {
-        OutputStream *ost = fg->outputs[i]->ost;
-        if (ost->enc_ctx->codec_type == AVMEDIA_TYPE_AUDIO &&
-            !(ost->enc_ctx->codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE))
-            av_buffersink_set_frame_size(ost->filter->filter,
-                                         ost->enc_ctx->frame_size);
-    }
 
     for (i = 0; i < fg->nb_inputs; i++) {
         AVFrame *tmp;
