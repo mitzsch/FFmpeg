@@ -128,7 +128,7 @@ static int write_packet(Muxer *mux, OutputStream *ost, AVPacket *pkt)
     }
     ms->last_mux_dts = pkt->dts;
 
-    ost->data_size_mux += pkt->size;
+    ms->data_size_mux += pkt->size;
     frame_num = atomic_fetch_add(&ost->packets_written, 1);
 
     pkt->stream_index = ost->index;
@@ -598,11 +598,116 @@ int of_stream_init(OutputFile *of, OutputStream *ost)
     return mux_check_init(mux);
 }
 
+static int check_written(OutputFile *of)
+{
+    int64_t total_packets_written = 0;
+    int pass1_used = 1;
+    int ret = 0;
+
+    for (int i = 0; i < of->nb_streams; i++) {
+        OutputStream *ost = of->streams[i];
+        uint64_t packets_written = atomic_load(&ost->packets_written);
+
+        total_packets_written += packets_written;
+
+        if (ost->enc_ctx &&
+            (ost->enc_ctx->flags & (AV_CODEC_FLAG_PASS1 | AV_CODEC_FLAG_PASS2))
+             != AV_CODEC_FLAG_PASS1)
+            pass1_used = 0;
+
+        if (!packets_written &&
+            (abort_on_flags & ABORT_ON_FLAG_EMPTY_OUTPUT_STREAM)) {
+            av_log(ost, AV_LOG_FATAL, "Empty output stream\n");
+            ret = err_merge(ret, AVERROR(EINVAL));
+        }
+    }
+
+    if (!total_packets_written) {
+        int level = AV_LOG_WARNING;
+
+        if (abort_on_flags & ABORT_ON_FLAG_EMPTY_OUTPUT) {
+            ret = err_merge(ret, AVERROR(EINVAL));
+            level = AV_LOG_FATAL;
+        }
+
+        av_log(of, level, "Output file is empty, nothing was encoded%s\n",
+               pass1_used ? "" : "(check -ss / -t / -frames parameters if used)");
+    }
+
+    return ret;
+}
+
+static void mux_final_stats(Muxer *mux)
+{
+    OutputFile *of = &mux->of;
+    uint64_t total_packets = 0, total_size = 0;
+    uint64_t video_size = 0, audio_size = 0, subtitle_size = 0,
+             extra_size = 0, other_size = 0;
+
+    uint8_t overhead[16] = "unknown";
+    int64_t file_size = of_filesize(of);
+
+    av_log(of, AV_LOG_VERBOSE, "Output file #%d (%s):\n",
+           of->index, of->url);
+
+    for (int j = 0; j < of->nb_streams; j++) {
+        OutputStream *ost = of->streams[j];
+        MuxStream     *ms = ms_from_ost(ost);
+        const AVCodecParameters *par = ost->st->codecpar;
+        const  enum AVMediaType type = par->codec_type;
+        const uint64_t s = ms->data_size_mux;
+
+        switch (type) {
+        case AVMEDIA_TYPE_VIDEO:    video_size    += s; break;
+        case AVMEDIA_TYPE_AUDIO:    audio_size    += s; break;
+        case AVMEDIA_TYPE_SUBTITLE: subtitle_size += s; break;
+        default:                    other_size    += s; break;
+        }
+
+        extra_size    += par->extradata_size;
+        total_size    += s;
+        total_packets += atomic_load(&ost->packets_written);
+
+        av_log(of, AV_LOG_VERBOSE, "  Output stream #%d:%d (%s): ",
+               of->index, j, av_get_media_type_string(type));
+        if (ost->enc_ctx) {
+            av_log(of, AV_LOG_VERBOSE, "%"PRIu64" frames encoded",
+                   ost->frames_encoded);
+            if (type == AVMEDIA_TYPE_AUDIO)
+                av_log(of, AV_LOG_VERBOSE, " (%"PRIu64" samples)", ost->samples_encoded);
+            av_log(of, AV_LOG_VERBOSE, "; ");
+        }
+
+        av_log(of, AV_LOG_VERBOSE, "%"PRIu64" packets muxed (%"PRIu64" bytes); ",
+               atomic_load(&ost->packets_written), s);
+
+        av_log(of, AV_LOG_VERBOSE, "\n");
+    }
+
+    av_log(of, AV_LOG_VERBOSE, "  Total: %"PRIu64" packets (%"PRIu64" bytes) muxed\n",
+           total_packets, total_size);
+
+    if (total_size && file_size > 0 && file_size >= total_size) {
+        snprintf(overhead, sizeof(overhead), "%f%%",
+                 100.0 * (file_size - total_size) / total_size);
+    }
+
+    av_log(of, AV_LOG_INFO,
+           "video:%1.0fkB audio:%1.0fkB subtitle:%1.0fkB other streams:%1.0fkB "
+           "global headers:%1.0fkB muxing overhead: %s\n",
+           video_size    / 1024.0,
+           audio_size    / 1024.0,
+           subtitle_size / 1024.0,
+           other_size    / 1024.0,
+           extra_size    / 1024.0,
+           overhead);
+}
+
 int of_write_trailer(OutputFile *of)
 {
     Muxer *mux = mux_from_of(of);
     AVFormatContext *fc = mux->fc;
-    int ret;
+    int ret, mux_result = 0;
 
     if (!mux->tq) {
         av_log(mux, AV_LOG_ERROR,
@@ -611,14 +716,12 @@ int of_write_trailer(OutputFile *of)
         return AVERROR(EINVAL);
     }
 
-    ret = thread_stop(mux);
-    if (ret < 0)
-        main_return_code = ret;
+    mux_result = thread_stop(mux);
 
     ret = av_write_trailer(fc);
     if (ret < 0) {
         av_log(mux, AV_LOG_ERROR, "Error writing trailer: %s\n", av_err2str(ret));
-        return ret;
+        mux_result = err_merge(mux_result, ret);
     }
 
     mux->last_filesize = filesize(fc->pb);
@@ -627,11 +730,17 @@ int of_write_trailer(OutputFile *of)
         ret = avio_closep(&fc->pb);
         if (ret < 0) {
             av_log(mux, AV_LOG_ERROR, "Error closing file: %s\n", av_err2str(ret));
-            return ret;
+            mux_result = err_merge(mux_result, ret);
         }
     }
 
-    return 0;
+    mux_final_stats(mux);
+
+    // check whether anything was actually written
+    ret = check_written(of);
+    mux_result = err_merge(mux_result, ret);
+
+    return mux_result;
 }
 
 static void ost_free(OutputStream **post)
@@ -663,7 +772,6 @@ static void ost_free(OutputStream **post)
     av_bsf_free(&ms->bsf_ctx);
 
     av_frame_free(&ost->filtered_frame);
-    av_frame_free(&ost->sq_frame);
     av_packet_free(&ost->pkt);
     av_dict_free(&ost->encoder_opts);
 

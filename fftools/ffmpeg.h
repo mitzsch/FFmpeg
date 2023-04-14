@@ -54,6 +54,7 @@
 #define FFMPEG_OPT_MAP_CHANNEL 1
 #define FFMPEG_OPT_MAP_SYNC 1
 #define FFMPEG_ROTATION_METADATA 1
+#define FFMPEG_OPT_QPHIST 1
 
 enum VideoSyncMethod {
     VSYNC_AUTO = -1,
@@ -314,6 +315,9 @@ typedef struct OutputFilter {
     const int *formats;
     const AVChannelLayout *ch_layouts;
     const int *sample_rates;
+
+    /* pts of the last frame received from this filter, in AV_TIME_BASE_Q */
+    int64_t last_pts;
 } OutputFilter;
 
 typedef struct FilterGraph {
@@ -366,8 +370,15 @@ typedef struct InputStream {
     int64_t first_dts;       ///< dts of the first packet read for this stream (in AV_TIME_BASE units)
     int64_t       dts;       ///< dts of the last packet read for this stream (in AV_TIME_BASE units)
 
-    int64_t       next_pts;  ///< synthetic pts for the next decode frame (in AV_TIME_BASE units)
+    /* predicted pts of the next decoded frame, in AV_TIME_BASE */
+    int64_t       next_pts;
     int64_t       pts;       ///< current pts of the decoded frame  (in AV_TIME_BASE units)
+
+    // pts/estimated duration of the last decoded video frame
+    // in decoder timebase
+    int64_t last_frame_pts;
+    int64_t last_frame_duration_est;
+
     int           wrap_correction_done;
 
     // the value of AVCodecParserContext.repeat_pict from the AVStream parser
@@ -412,6 +423,14 @@ typedef struct InputStream {
     InputFilter **filters;
     int        nb_filters;
 
+    /*
+     * Output targets that do not go through lavfi, i.e. subtitles or
+     * streamcopy. Those two cases are distinguished by the OutputStream
+     * having an encoder or not.
+     */
+    struct OutputStream **outputs;
+    int                nb_outputs;
+
     int reinit_filters;
 
     /* hwaccel options */
@@ -431,9 +450,6 @@ typedef struct InputStream {
     // number of frames/samples retrieved from the decoder
     uint64_t frames_decoded;
     uint64_t samples_decoded;
-
-    int64_t *dts_buffer;
-    int nb_dts_buffer;
 
     int got_output;
 } InputStream;
@@ -571,15 +587,8 @@ typedef struct OutputStream {
     InputStream *ist;
 
     AVStream *st;            /* stream in the output file */
-    /* number of frames emitted by the video-encoding sync code */
-    int64_t vsync_frame_number;
-    /* predicted pts of the next frame to be encoded
-     * audio/video encoding only */
-    int64_t next_pts;
     /* dts of the last packet sent to the muxing queue, in AV_TIME_BASE_Q */
     int64_t last_mux_dts;
-    /* pts of the last frame received from the filters, in AV_TIME_BASE_Q */
-    int64_t last_filter_pts;
 
     // timestamp from which the streamcopied streams should start,
     // in AV_TIME_BASE_Q;
@@ -593,10 +602,8 @@ typedef struct OutputStream {
     Encoder *enc;
     AVCodecContext *enc_ctx;
     AVFrame *filtered_frame;
-    AVFrame *sq_frame;
     AVPacket *pkt;
     int64_t last_dropped;
-    int64_t last_nb0_frames[3];
 
     /* video only */
     AVRational frame_rate;
@@ -655,8 +662,6 @@ typedef struct OutputStream {
     int keep_pix_fmt;
 
     /* stats */
-    // combined size of all the packets sent to the muxer
-    uint64_t data_size_mux;
     // combined size of all the packets received from the encoder
     uint64_t data_size_enc;
     // number of packets send to the muxer
@@ -746,7 +751,6 @@ extern int exit_on_error;
 extern int abort_on_flags;
 extern int print_stats;
 extern int64_t stats_period;
-extern int qp_hist;
 extern int stdin_interaction;
 extern AVIOContext *progress_avio;
 extern float max_error_rate;
@@ -762,7 +766,6 @@ extern const OptionDef options[];
 extern HWDevice *filter_hw_device;
 
 extern unsigned nb_output_dumped;
-extern int main_return_code;
 
 extern int ignore_unknown_streams;
 extern int copy_unknown_streams;
@@ -876,6 +879,8 @@ void ifile_close(InputFile **f);
  */
 int ifile_get_packet(InputFile *f, AVPacket **pkt);
 
+void ist_output_add(InputStream *ist, OutputStream *ost);
+
 /* iterate over all input streams in all input files;
  * pass NULL to start iteration */
 InputStream *ist_iter(InputStream *prev);
@@ -892,6 +897,17 @@ static inline double psnr(double d)
 void close_output_stream(OutputStream *ost);
 int trigger_fix_sub_duration_heartbeat(OutputStream *ost, const AVPacket *pkt);
 void update_benchmark(const char *fmt, ...);
+
+/**
+ * Merge two return codes - return one of the error codes if at least one of
+ * them was negative, 0 otherwise.
+ * Currently just picks the first one, eventually we might want to do something
+ * more sophisticated, like sorting them by priority.
+ */
+static inline int err_merge(int err0, int err1)
+{
+    return (err0 < 0) ? err0 : FFMIN(err1, 0);
+}
 
 #define SPECIFIER_OPT_FMT_str  "%s"
 #define SPECIFIER_OPT_FMT_i    "%i"

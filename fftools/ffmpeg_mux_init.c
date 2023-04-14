@@ -647,9 +647,11 @@ static OutputStream *new_output_stream(Muxer *mux, const OptionsContext *o,
     if (ost->ist) {
         ost->ist->discard = 0;
         ost->ist->st->discard = ost->ist->user_set_discard;
+
+        if (!(ost->enc && (type == AVMEDIA_TYPE_VIDEO || type == AVMEDIA_TYPE_AUDIO)))
+            ist_output_add(ost->ist, ost);
     }
     ost->last_mux_dts = AV_NOPTS_VALUE;
-    ost->last_filter_pts = AV_NOPTS_VALUE;
 
     MATCH_PER_STREAM_OPT(copy_initial_nonkeyframes, i,
                          ost->copy_initial_nonkeyframes, oc, st);
@@ -1505,10 +1507,6 @@ static int setup_sync_queues(Muxer *mux, AVFormatContext *oc, int64_t buf_size_u
             if (ost->sq_idx_encode < 0)
                 return ost->sq_idx_encode;
 
-            ost->sq_frame = av_frame_alloc();
-            if (!ost->sq_frame)
-                return AVERROR(ENOMEM);
-
             if (ms->max_frames != INT64_MAX)
                 sq_limit_frames(of->sq_encode, ost->sq_idx_encode, ms->max_frames);
         }
@@ -2252,7 +2250,8 @@ int of_open(const OptionsContext *o, const char *filename)
 
     err = avformat_alloc_output_context2(&oc, NULL, o->format, filename);
     if (!oc) {
-        print_error(filename, err);
+        av_log(mux, AV_LOG_FATAL, "Error initializing the muxer for %s: %s\n",
+               filename, av_err2str(err));
         exit_program(1);
     }
     mux->fc = oc;
@@ -2339,11 +2338,12 @@ int of_open(const OptionsContext *o, const char *filename)
     }
 
     /* check filename in case of an image number is expected */
-    if (oc->oformat->flags & AVFMT_NEEDNUMBER) {
-        if (!av_filename_number_test(oc->url)) {
-            print_error(oc->url, AVERROR(EINVAL));
-            exit_program(1);
-        }
+    if (oc->oformat->flags & AVFMT_NEEDNUMBER && !av_filename_number_test(oc->url)) {
+        av_log(mux, AV_LOG_FATAL,
+               "Output filename '%s' does not contain a numeric pattern like "
+               "'%%d', which is required by output format '%s'.\n",
+               oc->url, oc->oformat->name);
+        exit_program(1);
     }
 
     if (!(oc->oformat->flags & AVFMT_NOFILE)) {
@@ -2354,7 +2354,8 @@ int of_open(const OptionsContext *o, const char *filename)
         if ((err = avio_open2(&oc->pb, filename, AVIO_FLAG_WRITE,
                               &oc->interrupt_callback,
                               &mux->opts)) < 0) {
-            print_error(filename, err);
+            av_log(mux, AV_LOG_FATAL, "Error opening output %s: %s\n",
+                   filename, av_err2str(err));
             exit_program(1);
         }
     } else if (strcmp(oc->oformat->name, "image2")==0 && !av_filename_number_test(filename))
