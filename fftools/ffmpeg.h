@@ -578,8 +578,16 @@ typedef struct Encoder Encoder;
 typedef struct OutputStream {
     const AVClass *class;
 
+    enum AVMediaType type;
+
     int file_index;          /* file index */
     int index;               /* stream index in the output file */
+
+    /**
+     * Codec parameters for packets submitted to the muxer (i.e. before
+     * bitstream filtering, if any).
+     */
+    AVCodecParameters *par_in;
 
     /* input stream that is the source for this output stream;
      * may be NULL for streams with no well-defined source, e.g.
@@ -589,11 +597,6 @@ typedef struct OutputStream {
     AVStream *st;            /* stream in the output file */
     /* dts of the last packet sent to the muxing queue, in AV_TIME_BASE_Q */
     int64_t last_mux_dts;
-
-    // timestamp from which the streamcopied streams should start,
-    // in AV_TIME_BASE_Q;
-    // everything before it should be discarded
-    int64_t ts_copy_start;
 
     // the timebase of the packets sent to the muxer
     AVRational mux_timebase;
@@ -655,15 +658,10 @@ typedef struct OutputStream {
     int inputs_done;
 
     const char *attachment_filename;
-    int streamcopy_started;
-    int copy_initial_nonkeyframes;
-    int copy_prior_start;
 
     int keep_pix_fmt;
 
     /* stats */
-    // combined size of all the packets received from the encoder
-    uint64_t data_size_enc;
     // number of packets send to the muxer
     atomic_uint_least64_t packets_written;
     // number of frames/samples sent to the encoder
@@ -829,6 +827,8 @@ AVBufferRef *hw_device_for_filter(void);
 
 int hwaccel_decode_init(AVCodecContext *avctx);
 
+int dec_open(InputStream *ist);
+
 int enc_alloc(Encoder **penc, const AVCodec *codec);
 void enc_free(Encoder **penc);
 
@@ -862,6 +862,12 @@ void of_enc_stats_close(void);
  * must be supplied in this case.
  */
 void of_output_packet(OutputFile *of, AVPacket *pkt, OutputStream *ost, int eof);
+
+/**
+ * @param dts predicted packet dts in AV_TIME_BASE_Q
+ */
+void of_streamcopy(OutputStream *ost, const AVPacket *pkt, int64_t dts);
+
 int64_t of_filesize(OutputFile *of);
 
 int ifile_open(const OptionsContext *o, const char *filename);
@@ -880,6 +886,7 @@ void ifile_close(InputFile **f);
 int ifile_get_packet(InputFile *f, AVPacket **pkt);
 
 void ist_output_add(InputStream *ist, OutputStream *ost);
+void ist_filter_add(InputStream *ist, InputFilter *ifilter, int is_simple);
 
 /* iterate over all input streams in all input files;
  * pass NULL to start iteration */

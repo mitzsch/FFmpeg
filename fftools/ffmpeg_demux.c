@@ -561,10 +561,33 @@ void ifile_close(InputFile **pf)
     av_freep(pf);
 }
 
+static void ist_use(InputStream *ist, int decoding_needed)
+{
+    ist->discard          = 0;
+    ist->st->discard      = ist->user_set_discard;
+    ist->decoding_needed |= decoding_needed;
+
+    if (decoding_needed && !avcodec_is_open(ist->dec_ctx)) {
+        int ret = dec_open(ist);
+        if (ret < 0)
+            report_and_exit(ret);
+    }
+}
+
 void ist_output_add(InputStream *ist, OutputStream *ost)
 {
+    ist_use(ist, ost->enc ? DECODING_FOR_OST : 0);
+
     GROW_ARRAY(ist->outputs, ist->nb_outputs);
     ist->outputs[ist->nb_outputs - 1] = ost;
+}
+
+void ist_filter_add(InputStream *ist, InputFilter *ifilter, int is_simple)
+{
+    ist_use(ist, is_simple ? DECODING_FOR_OST : DECODING_FOR_FILTER);
+
+    GROW_ARRAY(ist->filters, ist->nb_filters);
+    ist->filters[ist->nb_filters - 1] = ifilter;
 }
 
 static const AVCodec *choose_decoder(const OptionsContext *o, AVFormatContext *s, AVStream *st,
@@ -736,8 +759,12 @@ static void add_input_streams(const OptionsContext *o, Demuxer *d)
         MATCH_PER_STREAM_OPT(codec_tags, str, codec_tag, ic, st);
         if (codec_tag) {
             uint32_t tag = strtol(codec_tag, &next, 0);
-            if (*next)
-                tag = AV_RL32(codec_tag);
+            if (*next) {
+                uint8_t buf[4] = { 0 };
+                memcpy(buf, codec_tag, FFMIN(sizeof(buf), strlen(codec_tag)));
+                tag = AV_RL32(buf);
+            }
+
             st->codecpar->codec_tag = tag;
         }
 
