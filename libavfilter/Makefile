@@ -172,6 +172,7 @@ OBJS-$(CONFIG_VOLUMEDETECT_FILTER)           += af_volumedetect.o
 
 OBJS-$(CONFIG_AEVALSRC_FILTER)               += aeval.o
 OBJS-$(CONFIG_AFDELAYSRC_FILTER)             += asrc_afdelaysrc.o
+OBJS-$(CONFIG_AFIREQSRC_FILTER)              += asrc_afirsrc.o
 OBJS-$(CONFIG_AFIRSRC_FILTER)                += asrc_afirsrc.o
 OBJS-$(CONFIG_ANOISESRC_FILTER)              += asrc_anoisesrc.o
 OBJS-$(CONFIG_ANULLSRC_FILTER)               += asrc_anullsrc.o
@@ -634,9 +635,6 @@ SKIPHEADERS-$(CONFIG_VULKAN)                 += vulkan.h vulkan_filter.h
 
 TOOLS     = graph2dot
 TESTPROGS = drawutils filtfmts formats integral
-TESTPROGS-$(CONFIG_DNN) += dnn-layer-avgpool dnn-layer-conv2d dnn-layer-dense  \
-                           dnn-layer-depth2space dnn-layer-mathbinary          \
-                           dnn-layer-mathunary dnn-layer-maximum dnn-layer-pad \
 
 TOOLS-$(CONFIG_LIBZMQ) += zmqsend
 

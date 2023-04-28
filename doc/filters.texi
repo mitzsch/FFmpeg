@@ -1849,6 +1849,12 @@ Always use double-floating point precision sample format.
 @end table
 
 Default value is auto.
+
+@item irload
+Set when to load IR stream. Can be @code{init} or @code{access}.
+First one load and prepares all IRs on initialization, second one
+once on first access of specific IR.
+Default is @code{init}.
 @end table
 
 @subsection Examples
@@ -7618,6 +7624,71 @@ Specifies the channel layout, and can be a string representing a channel layout.
 The default value of @var{channel_layout} is "stereo".
 @end table
 
+@section afireqsrc
+
+Generate a FIR equalizer coefficients.
+
+The resulting stream can be used with @ref{afir} filter for filtering the audio signal.
+
+The filter accepts the following options:
+
+@table @option
+@item preset, p
+Set equalizer preset.
+Default preset is @code{flat}.
+
+Available presets are:
+@table @samp
+@item custom
+@item flat
+@item acoustic
+@item bass
+@item beats
+@item classic
+@item clear
+@item deep bass
+@item dubstep
+@item electronic
+@item hard-style
+@item hip-hop
+@item jazz
+@item metal
+@item movie
+@item pop
+@item r&b
+@item rock
+@item vocal booster
+@end table
+
+@item gains, g
+Set custom gains for each band. Only used if the preset option is set to @code{custom}.
+Gains are separated by white spaces and each gain is set in dBFS.
+Default is @code{0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0}.
+
+@item bands, b
+Set the custom bands from where custon equalizer gains are set.
+This must be in strictly increasing order. Only used if the preset option is set to @code{custom}.
+Bands are separated by white spaces and each band represent frequency in Hz.
+Default is @code{25 40 63 100 160 250 400 630 1000 1600 2500 4000 6300 10000 16000 24000}.
+
+@item taps, t
+Set number of filter coefficents in output audio stream.
+Default value is @code{4096}.
+
+@item sample_rate, r
+Set sample rate of output audio stream, default is @code{44100}.
+
+@item nb_samples, n
+Set number of samples per each frame in output audio stream. Default is @code{1024}.
+
+@item interp, i
+Set interpolation method for FIR equalizer coefficients. Can be @code{linear} or @code{cubic}.
+
+@item phase, h
+Set phase type of FIR filter. Can be @code{linear} or @code{min}: minimum-phase.
+Default is minimum-phase filter.
+@end table
+
 @section afirsrc
 
 Generate a FIR coefficients using frequency sampling method.
@@ -11332,9 +11403,6 @@ See @url{http://openaccess.thecvf.com/content_ECCV_2018/papers/Xia_Li_Recurrent_
 Training as well as model generation scripts are provided in
 the repository at @url{https://github.com/XueweiMeng/derain_filter.git}.
 
-Native model files (.model) can be generated from TensorFlow model
-files (.pb) by using tools/python/convert.py
-
 The filter accepts the following options:
 
 @table @option
@@ -11355,21 +11423,16 @@ Specify which DNN backend to use for model loading and execution. This option ac
 the following values:
 
 @table @samp
-@item native
-Native implementation of DNN loading and execution.
-
 @item tensorflow
 TensorFlow backend. To enable this backend you
 need to install the TensorFlow for C library (see
 @url{https://www.tensorflow.org/install/lang_c}) and configure FFmpeg with
 @code{--enable-libtensorflow}
 @end table
-Default value is @samp{native}.
 
 @item model
 Set path to model file specifying network architecture and its parameters.
-Note that different backends use different file formats. TensorFlow and native
-backend can load files for only its format.
+Note that different backends use different file formats. TensorFlow can load files for only its format.
 @end table
 
 To get full functionality (such as async execution), please use the @ref{dnn_processing} filter.
@@ -11693,9 +11756,6 @@ Specify which DNN backend to use for model loading and execution. This option ac
 the following values:
 
 @table @samp
-@item native
-Native implementation of DNN loading and execution.
-
 @item tensorflow
 TensorFlow backend. To enable this backend you
 need to install the TensorFlow for C library (see
@@ -11711,14 +11771,9 @@ be needed if the header files and libraries are not installed into system path)
 
 @end table
 
-Default value is @samp{native}.
-
 @item model
 Set path to model file specifying network architecture and its parameters.
-Note that different backends use different file formats. TensorFlow, OpenVINO and native
-backend can load files for only its format.
-
-Native model file (.model) can be generated from TensorFlow model file (.pb) by using tools/python/convert.py
+Note that different backends use different file formats. TensorFlow, OpenVINO backend can load files for only its format.
 
 @item input
 Set the input name of the dnn network.
@@ -11742,12 +11797,6 @@ please use tools/python/tf_sess_config.py to get the configs of TensorFlow backe
 Remove rain in rgb24 frame with can.pb (see @ref{derain} filter):
 @example
 ./ffmpeg -i rain.jpg -vf format=rgb24,dnn_processing=dnn_backend=tensorflow:model=can.pb:input=x:output=y derain.jpg
-@end example
-
-@item
-Halve the pixel value of the frame with format gray32f:
-@example
-ffmpeg -i input.jpg -vf format=grayf32,dnn_processing=model=halve_gray_float.model:input=dnn_in:output=dnn_out:dnn_backend=native -y out.native.png
 @end example
 
 @item
@@ -16325,16 +16374,6 @@ This filter supports almost all of the above options as @ref{commands}.
 @subsection Examples
 @itemize
 @item
-Complete example for how to initialize the Vulkan device, upload frames to the
-GPU, perform filter conversion to yuv420p, and download frames back to the CPU
-for output. Note that in specific cases you can get around the need to perform
-format conversion by specifying the correct @code{format} filter option
-corresponding to the input frames.
-@example
-ffmpeg -i $INPUT -init_hw_device vulkan -vf hwupload,libplacebo=format=yuv420p,hwdownload,format=yuv420p $OUTPUT
-@end example
-
-@item
 Tone-map input to standard gamut BT.709 output:
 @example
 libplacebo=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv
@@ -16372,6 +16411,12 @@ either already on the GPU, or if you're using libplacebo for other purposes,
 since otherwise the VRAM roundtrip will more than offset any expected speedup.
 @example
 ffmpeg -export_side_data +film_grain ... -vf libplacebo=apply_filmgrain=true
+@end example
+
+@item
+Interop with VAAPI hwdec to avoid round-tripping through RAM:
+@example
+ffmpeg -init_hw_device vulkan -hwaccel vaapi -hwaccel_output_format vaapi ... -vf libplacebo
 @end example
 @end itemize
 
@@ -21811,9 +21856,6 @@ Training scripts as well as scripts for model file (.pb) saving can be found at
 @url{https://github.com/XueweiMeng/sr/tree/sr_dnn_native}. Original repository
 is at @url{https://github.com/HighVoltageRocknRoll/sr.git}.
 
-Native model files (.model) can be generated from TensorFlow model
-files (.pb) by using tools/python/convert.py
-
 The filter accepts the following options:
 
 @table @option
@@ -21822,9 +21864,6 @@ Specify which DNN backend to use for model loading and execution. This option ac
 the following values:
 
 @table @samp
-@item native
-Native implementation of DNN loading and execution.
-
 @item tensorflow
 TensorFlow backend. To enable this backend you
 need to install the TensorFlow for C library (see
@@ -21832,13 +21871,10 @@ need to install the TensorFlow for C library (see
 @code{--enable-libtensorflow}
 @end table
 
-Default value is @samp{native}.
-
 @item model
 Set path to model file specifying network architecture and its parameters.
-Note that different backends use different file formats. TensorFlow backend
-can load files for both formats, while native backend can load files for only
-its format.
+Note that different backends use different file formats. TensorFlow, OpenVINO backend
+can load files for only its format.
 
 @item scale_factor
 Set scale factor for SRCNN model. Allowed values are @code{2}, @code{3} and @code{4}.
