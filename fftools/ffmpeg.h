@@ -55,6 +55,7 @@
 #define FFMPEG_OPT_MAP_SYNC 1
 #define FFMPEG_ROTATION_METADATA 1
 #define FFMPEG_OPT_QPHIST 1
+#define FFMPEG_OPT_ADRIFT_THRESHOLD 1
 
 enum VideoSyncMethod {
     VSYNC_AUTO = -1,
@@ -276,8 +277,6 @@ typedef struct InputFilter {
     uint8_t            *name;
     enum AVMediaType    type;   // AVMEDIA_TYPE_SUBTITLE for sub2video
 
-    AVFifo *frame_queue;
-
     // parameters configured for this input
     int format;
 
@@ -322,7 +321,6 @@ typedef struct OutputFilter {
 
 typedef struct FilterGraph {
     int            index;
-    const char    *graph_desc;
 
     AVFilterGraph *graph;
     // true when the filtergraph contains only meta filters
@@ -361,7 +359,6 @@ typedef struct InputStream {
 
     AVRational framerate_guessed;
 
-    int64_t       prev_pkt_pts;
     int64_t       start;     /* time when read started */
     /* predicted dts of the next packet read for this stream or (when there are
      * several frames in a packet) of the next frame in current packet (in AV_TIME_BASE units) */
@@ -369,14 +366,13 @@ typedef struct InputStream {
     int64_t first_dts;       ///< dts of the first packet read for this stream (in AV_TIME_BASE units)
     int64_t       dts;       ///< dts of the last packet read for this stream (in AV_TIME_BASE units)
 
-    /* predicted pts of the next decoded frame, in AV_TIME_BASE */
-    int64_t       next_pts;
-    int64_t       pts;       ///< current pts of the decoded frame  (in AV_TIME_BASE units)
-
-    // pts/estimated duration of the last decoded video frame
-    // in decoder timebase
+    // pts/estimated duration of the last decoded frame
+    // * in decoder timebase for video,
+    // * in last_frame_tb (may change during decoding) for audio
     int64_t last_frame_pts;
     int64_t last_frame_duration_est;
+    AVRational    last_frame_tb;
+    int           last_frame_sample_rate;
 
     int           wrap_correction_done;
 
@@ -603,7 +599,6 @@ typedef struct OutputStream {
 
     Encoder *enc;
     AVCodecContext *enc_ctx;
-    AVFrame *filtered_frame;
     AVPacket *pkt;
     int64_t last_dropped;
 
@@ -664,17 +659,9 @@ typedef struct OutputStream {
     // number of frames/samples sent to the encoder
     uint64_t frames_encoded;
     uint64_t samples_encoded;
-    // number of packets received from the encoder
-    uint64_t packets_encoded;
 
     /* packet quality factor */
     int quality;
-
-    /* packet picture type */
-    int pict_type;
-
-    /* frame encode sum of squared error values */
-    int64_t error[4];
 
     int sq_idx_encode;
     int sq_idx_mux;
@@ -728,7 +715,6 @@ extern int        nb_filtergraphs;
 extern char *vstats_filename;
 extern char *sdp_filename;
 
-extern float audio_drift_threshold;
 extern float dts_delta_threshold;
 extern float dts_error_threshold;
 
@@ -800,9 +786,8 @@ int init_complex_filtergraph(FilterGraph *fg);
 void sub2video_update(InputStream *ist, int64_t heartbeat_pts, AVSubtitle *sub);
 
 int ifilter_send_frame(InputFilter *ifilter, AVFrame *frame, int keep_reference);
-int ifilter_send_eof(InputFilter *ifilter, int64_t pts);
+int ifilter_send_eof(InputFilter *ifilter, int64_t pts, AVRational tb);
 
-int ifilter_parameters_from_frame(InputFilter *ifilter, const AVFrame *frame);
 int ifilter_parameters_from_codecpar(InputFilter *ifilter, AVCodecParameters *par);
 int ifilter_has_all_input_formats(FilterGraph *fg);
 
@@ -922,11 +907,6 @@ InputStream *ist_iter(InputStream *prev);
 /* iterate over all output streams in all output files;
  * pass NULL to start iteration */
 OutputStream *ost_iter(OutputStream *prev);
-
-static inline double psnr(double d)
-{
-    return -10.0 * log10(d);
-}
 
 void close_output_stream(OutputStream *ost);
 int trigger_fix_sub_duration_heartbeat(OutputStream *ost, const AVPacket *pkt);

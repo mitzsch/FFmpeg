@@ -219,7 +219,7 @@ typedef struct HEVCSPS {
     int palette_max_size;
     int delta_palette_max_predictor_size;
     int sps_palette_predictor_initializers_present_flag;
-    int sps_num_palette_predictor_initializers_minus1;
+    int sps_num_palette_predictor_initializers;
     int sps_palette_predictor_initializer[3][HEVC_MAX_PALETTE_PREDICTOR_SIZE];
     int motion_vector_resolution_control_idc;
     int intra_boundary_filtering_disabled_flag;
@@ -358,9 +358,9 @@ typedef struct HEVCPPS {
     uint8_t pps_palette_predictor_initializers_present_flag;
     uint8_t pps_num_palette_predictor_initializers;
     uint8_t monochrome_palette_flag;
-    uint8_t luma_bit_depth_entry_minus8;
-    uint8_t chroma_bit_depth_entry_minus8;
-    uint8_t pps_palette_predictor_initializer[3][HEVC_MAX_PALETTE_PREDICTOR_SIZE];
+    uint8_t luma_bit_depth_entry;
+    uint8_t chroma_bit_depth_entry;
+    uint16_t pps_palette_predictor_initializer[3][HEVC_MAX_PALETTE_PREDICTOR_SIZE];
 
     // Inferred parameters
     unsigned int *column_width;  ///< ColumnWidth

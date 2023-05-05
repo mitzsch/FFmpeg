@@ -649,8 +649,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     av_bprint_init(&buf, 0, AV_BPRINT_SIZE_AUTOMATIC);
     av_bprint_init(&buf_script, 0, AV_BPRINT_SIZE_AUTOMATIC);
     for (OutputStream *ost = ost_iter(NULL); ost; ost = ost_iter(ost)) {
-        const AVCodecContext * const enc = ost->enc_ctx;
-        const float q = enc ? ost->quality / (float) FF_QP2LAMBDA : -1;
+        const float q = ost->enc ? ost->quality / (float) FF_QP2LAMBDA : -1;
 
         if (vid && ost->type == AVMEDIA_TYPE_VIDEO) {
             av_bprintf(&buf, "q=%2.1f ", q);
@@ -823,7 +822,7 @@ int ifilter_has_all_input_formats(FilterGraph *fg)
 // it again with pkt=NULL. pkt==NULL is treated differently from pkt->size==0
 // (pkt==NULL means get more output, pkt->size==0 is a flush/drain packet)
 static int decode(InputStream *ist, AVCodecContext *avctx,
-                  AVFrame *frame, int *got_frame, AVPacket *pkt)
+                  AVFrame *frame, int *got_frame, const AVPacket *pkt)
 {
     int ret;
 
@@ -856,6 +855,8 @@ static int decode(InputStream *ist, AVCodecContext *avctx,
             fd->idx = avctx->frame_num - 1;
         }
 
+        frame->time_base = avctx->pkt_timebase;
+
         *got_frame = 1;
     }
 
@@ -880,13 +881,91 @@ static int send_frame_to_filters(InputStream *ist, AVFrame *decoded_frame)
     return ret;
 }
 
-static int decode_audio(InputStream *ist, AVPacket *pkt, int *got_output,
+static AVRational audio_samplerate_update(InputStream *ist, const AVFrame *frame)
+{
+    const int prev = ist->last_frame_tb.den;
+    const int sr   = frame->sample_rate;
+
+    AVRational tb_new;
+    int64_t gcd;
+
+    if (frame->sample_rate == ist->last_frame_sample_rate)
+        goto finish;
+
+    gcd  = av_gcd(prev, sr);
+
+    if (prev / gcd >= INT_MAX / sr) {
+        av_log(ist, AV_LOG_WARNING,
+               "Audio timestamps cannot be represented exactly after "
+               "sample rate change: %d -> %d\n", prev, sr);
+
+        // LCM of 192000, 44100, allows to represent all common samplerates
+        tb_new = (AVRational){ 1, 28224000 };
+    } else
+        tb_new = (AVRational){ 1, prev / gcd * sr };
+
+    // keep the frame timebase if it is strictly better than
+    // the samplerate-defined one
+    if (frame->time_base.num == 1 && frame->time_base.den > tb_new.den &&
+        !(frame->time_base.den % tb_new.den))
+        tb_new = frame->time_base;
+
+    if (ist->last_frame_pts != AV_NOPTS_VALUE)
+        ist->last_frame_pts = av_rescale_q(ist->last_frame_pts,
+                                           ist->last_frame_tb, tb_new);
+    ist->last_frame_duration_est = av_rescale_q(ist->last_frame_duration_est,
+                                                ist->last_frame_tb, tb_new);
+
+    ist->last_frame_tb          = tb_new;
+    ist->last_frame_sample_rate = frame->sample_rate;
+
+finish:
+    return ist->last_frame_tb;
+}
+
+static void audio_ts_process(InputStream *ist, AVFrame *frame)
+{
+    AVRational tb_filter = (AVRational){1, frame->sample_rate};
+    AVRational tb;
+    int64_t pts_pred;
+
+    // on samplerate change, choose a new internal timebase for timestamp
+    // generation that can represent timestamps from all the samplerates
+    // seen so far
+    tb = audio_samplerate_update(ist, frame);
+    pts_pred = ist->last_frame_pts == AV_NOPTS_VALUE ? 0 :
+               ist->last_frame_pts + ist->last_frame_duration_est;
+
+    if (frame->pts == AV_NOPTS_VALUE) {
+        frame->pts = pts_pred;
+        frame->time_base = tb;
+    } else if (ist->last_frame_pts != AV_NOPTS_VALUE &&
+               frame->pts > av_rescale_q_rnd(pts_pred, tb, frame->time_base,
+                                             AV_ROUND_UP)) {
+        // there was a gap in timestamps, reset conversion state
+        ist->filter_in_rescale_delta_last = AV_NOPTS_VALUE;
+    }
+
+    frame->pts = av_rescale_delta(frame->time_base, frame->pts,
+                                  tb, frame->nb_samples,
+                                  &ist->filter_in_rescale_delta_last, tb);
+
+    ist->last_frame_pts          = frame->pts;
+    ist->last_frame_duration_est = av_rescale_q(frame->nb_samples,
+                                                tb_filter, tb);
+
+    // finally convert to filtering timebase
+    frame->pts       = av_rescale_q(frame->pts, tb, tb_filter);
+    frame->duration  = frame->nb_samples;
+    frame->time_base = tb_filter;
+}
+
+static int decode_audio(InputStream *ist, const AVPacket *pkt, int *got_output,
                         int *decode_failed)
 {
     AVFrame *decoded_frame = ist->decoded_frame;
     AVCodecContext *avctx = ist->dec_ctx;
     int ret, err = 0;
-    AVRational decoded_frame_tb;
 
     update_benchmark(NULL);
     ret = decode(ist, avctx, decoded_frame, got_output, pkt);
@@ -903,33 +982,8 @@ static int decode_audio(InputStream *ist, AVPacket *pkt, int *got_output,
     ist->samples_decoded += decoded_frame->nb_samples;
     ist->frames_decoded++;
 
-    /* increment next_dts to use for the case where the input stream does not
-       have timestamps or there are multiple frames in the packet */
-    ist->next_pts += ((int64_t)AV_TIME_BASE * decoded_frame->nb_samples) /
-                     decoded_frame->sample_rate;
-    ist->next_dts += ((int64_t)AV_TIME_BASE * decoded_frame->nb_samples) /
-                     decoded_frame->sample_rate;
+    audio_ts_process(ist, decoded_frame);
 
-    if (decoded_frame->pts != AV_NOPTS_VALUE) {
-        decoded_frame_tb   = ist->st->time_base;
-    } else if (pkt && pkt->pts != AV_NOPTS_VALUE) {
-        decoded_frame->pts = pkt->pts;
-        decoded_frame_tb   = pkt->time_base;
-    }else {
-        decoded_frame->pts = ist->dts;
-        decoded_frame_tb   = AV_TIME_BASE_Q;
-    }
-    if (pkt && pkt->duration && ist->prev_pkt_pts != AV_NOPTS_VALUE &&
-        pkt->pts != AV_NOPTS_VALUE && pkt->pts - ist->prev_pkt_pts > pkt->duration)
-        ist->filter_in_rescale_delta_last = AV_NOPTS_VALUE;
-    if (pkt)
-        ist->prev_pkt_pts = pkt->pts;
-    if (decoded_frame->pts != AV_NOPTS_VALUE)
-        decoded_frame->pts = av_rescale_delta(decoded_frame_tb, decoded_frame->pts,
-                                              (AVRational){1, decoded_frame->sample_rate},
-                                              decoded_frame->nb_samples,
-                                              &ist->filter_in_rescale_delta_last,
-                                              (AVRational){1, decoded_frame->sample_rate});
     ist->nb_samples = decoded_frame->nb_samples;
     err = send_frame_to_filters(ist, decoded_frame);
 
@@ -989,8 +1043,8 @@ static int64_t video_duration_estimate(const InputStream *ist, const AVFrame *fr
     return FFMAX(ist->last_frame_duration_est, 1);
 }
 
-static int decode_video(InputStream *ist, AVPacket *pkt, int *got_output, int64_t *duration_pts, int eof,
-                        int *decode_failed)
+static int decode_video(InputStream *ist, const AVPacket *pkt, int *got_output,
+                        int64_t *duration_pts, int eof, int *decode_failed)
 {
     AVFrame *decoded_frame = ist->decoded_frame;
     int ret = 0, err = 0;
@@ -1044,7 +1098,7 @@ static int decode_video(InputStream *ist, AVPacket *pkt, int *got_output, int64_
         return ret;
 
     if(ist->top_field_first>=0)
-        decoded_frame->top_field_first = ist->top_field_first;
+        decoded_frame->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
 
     ist->frames_decoded++;
 
@@ -1061,23 +1115,18 @@ static int decode_video(InputStream *ist, AVPacket *pkt, int *got_output, int64_
         best_effort_timestamp = ist->cfr_next_pts++;
 
     // no timestamp available - extrapolate from previous frame duration
-    if (best_effort_timestamp == AV_NOPTS_VALUE &&
-        ist->last_frame_pts != AV_NOPTS_VALUE)
-        best_effort_timestamp = ist->last_frame_pts + ist->last_frame_duration_est;
-
     if (best_effort_timestamp == AV_NOPTS_VALUE)
-        best_effort_timestamp = av_rescale_q(ist->pts, AV_TIME_BASE_Q, ist->st->time_base);
+        best_effort_timestamp = ist->last_frame_pts == AV_NOPTS_VALUE ? 0 :
+                                ist->last_frame_pts + ist->last_frame_duration_est;
 
     if(best_effort_timestamp != AV_NOPTS_VALUE) {
-        int64_t ts = av_rescale_q(decoded_frame->pts = best_effort_timestamp, ist->st->time_base, AV_TIME_BASE_Q);
-
-        if (ts != AV_NOPTS_VALUE)
-            ist->next_pts = ist->pts = ts;
+        decoded_frame->pts = best_effort_timestamp;
     }
 
     // update timestamp history
     ist->last_frame_duration_est = video_duration_estimate(ist, decoded_frame);
     ist->last_frame_pts          = decoded_frame->pts;
+    ist->last_frame_tb           = decoded_frame->time_base;
 
     if (debug_ts) {
         av_log(ist, AV_LOG_INFO,
@@ -1094,7 +1143,7 @@ static int decode_video(InputStream *ist, AVPacket *pkt, int *got_output, int64_
                av_ts2timestr(best_effort_timestamp, &ist->st->time_base),
                av_ts2str(decoded_frame->duration),
                av_ts2timestr(decoded_frame->duration, &ist->st->time_base),
-               decoded_frame->key_frame, decoded_frame->pict_type,
+               !!(decoded_frame->flags & AV_FRAME_FLAG_KEY), decoded_frame->pict_type,
                ist->st->time_base.num, ist->st->time_base.den);
     }
 
@@ -1155,7 +1204,7 @@ static int process_subtitle(InputStream *ist, AVSubtitle *subtitle, int *got_out
 
     for (int oidx = 0; oidx < ist->nb_outputs; oidx++) {
         OutputStream *ost = ist->outputs[oidx];
-        if (!ost->enc_ctx || ost->enc_ctx->codec_type != AVMEDIA_TYPE_SUBTITLE)
+        if (!ost->enc || ost->type != AVMEDIA_TYPE_SUBTITLE)
             continue;
 
         enc_subtitle(output_files[ost->file_index], ost, subtitle);
@@ -1321,12 +1370,11 @@ static int transcode_subtitles(InputStream *ist, const AVPacket *pkt,
 static int send_filter_eof(InputStream *ist)
 {
     int i, ret;
-    /* TODO keep pts also in stream time base to avoid converting back */
-    int64_t pts = av_rescale_q_rnd(ist->pts, AV_TIME_BASE_Q, ist->st->time_base,
-                                   AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
 
     for (i = 0; i < ist->nb_filters; i++) {
-        ret = ifilter_send_eof(ist->filters[i], pts);
+        int64_t end_pts = ist->last_frame_pts == AV_NOPTS_VALUE ? AV_NOPTS_VALUE :
+                          ist->last_frame_pts + ist->last_frame_duration_est;
+        ret = ifilter_send_eof(ist->filters[i], end_pts, ist->last_frame_tb);
         if (ret < 0)
             return ret;
     }
@@ -1348,8 +1396,7 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
     if (!ist->saw_first_ts) {
         ist->first_dts =
         ist->dts = ist->st->avg_frame_rate.num ? - ist->dec_ctx->has_b_frames * AV_TIME_BASE / av_q2d(ist->st->avg_frame_rate) : 0;
-        ist->pts = 0;
-        if (pkt && pkt->pts != AV_NOPTS_VALUE && !ist->decoding_needed) {
+        if (pkt && pkt->pts != AV_NOPTS_VALUE) {
             ist->first_dts =
             ist->dts += av_rescale_q(pkt->pts, pkt->time_base, AV_TIME_BASE_Q);
         }
@@ -1358,8 +1405,6 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
 
     if (ist->next_dts == AV_NOPTS_VALUE)
         ist->next_dts = ist->dts;
-    if (ist->next_pts == AV_NOPTS_VALUE)
-        ist->next_pts = ist->pts;
 
     if (pkt) {
         av_packet_unref(avpkt);
@@ -1370,19 +1415,13 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
 
     if (pkt && pkt->dts != AV_NOPTS_VALUE) {
         ist->next_dts = ist->dts = av_rescale_q(pkt->dts, pkt->time_base, AV_TIME_BASE_Q);
-        if (par->codec_type != AVMEDIA_TYPE_VIDEO)
-            ist->pts = ist->dts;
     }
 
     // while we have more to decode or while the decoder did output something on EOF
     while (ist->decoding_needed) {
-        int64_t duration_dts = 0;
         int64_t duration_pts = 0;
         int got_output = 0;
         int decode_failed = 0;
-
-        ist->pts = ist->next_pts;
-        ist->dts = ist->next_dts;
 
         switch (par->codec_type) {
         case AVMEDIA_TYPE_AUDIO:
@@ -1393,31 +1432,7 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
         case AVMEDIA_TYPE_VIDEO:
             ret = decode_video    (ist, repeating ? NULL : avpkt, &got_output, &duration_pts, !pkt,
                                    &decode_failed);
-            if (!repeating || !pkt || got_output) {
-                if (pkt && pkt->duration) {
-                    duration_dts = av_rescale_q(pkt->duration, pkt->time_base, AV_TIME_BASE_Q);
-                } else if(ist->dec_ctx->framerate.num != 0 && ist->dec_ctx->framerate.den != 0) {
-                    int ticks = ist->last_pkt_repeat_pict >= 0 ?
-                                ist->last_pkt_repeat_pict + 1  :
-                                ist->dec_ctx->ticks_per_frame;
-                    duration_dts = ((int64_t)AV_TIME_BASE *
-                                    ist->dec_ctx->framerate.den * ticks) /
-                                    ist->dec_ctx->framerate.num / ist->dec_ctx->ticks_per_frame;
-                }
 
-                if(ist->dts != AV_NOPTS_VALUE && duration_dts) {
-                    ist->next_dts += duration_dts;
-                }else
-                    ist->next_dts = AV_NOPTS_VALUE;
-            }
-
-            if (got_output) {
-                if (duration_pts > 0) {
-                    ist->next_pts += av_rescale_q(duration_pts, ist->st->time_base, AV_TIME_BASE_Q);
-                } else {
-                    ist->next_pts += duration_dts;
-                }
-            }
             av_packet_unref(avpkt);
             break;
         case AVMEDIA_TYPE_SUBTITLE:
@@ -1480,8 +1495,7 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
         }
     }
 
-    /* handle stream copy */
-    if (!ist->decoding_needed && pkt) {
+    if (pkt) {
         ist->dts = ist->next_dts;
         switch (par->codec_type) {
         case AVMEDIA_TYPE_AUDIO:
@@ -1511,7 +1525,9 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
             }
             break;
         }
-    } else if (!ist->decoding_needed)
+    }
+
+    if (!pkt && !ist->decoding_needed)
         eof_reached = 1;
 
     duration_exceeded = 0;
@@ -1527,7 +1543,7 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
 
     for (int oidx = 0; oidx < ist->nb_outputs; oidx++) {
         OutputStream *ost = ist->outputs[oidx];
-        if (ost->enc_ctx || (!pkt && no_eof))
+        if (ost->enc || (!pkt && no_eof))
             continue;
 
         if (duration_exceeded) {
@@ -1769,40 +1785,6 @@ static int check_keyboard_interaction(int64_t cur_time)
                    "only %d given in string '%s'\n", n, buf);
         }
     }
-    if (key == 'd' || key == 'D'){
-        int debug=0;
-        if(key == 'D') {
-            InputStream *ist = ist_iter(NULL);
-
-            if (ist)
-                debug = ist->dec_ctx->debug << 1;
-
-            if(!debug) debug = 1;
-            while (debug & FF_DEBUG_DCT_COEFF) //unsupported, would just crash
-                debug += debug;
-        }else{
-            char buf[32];
-            int k = 0;
-            i = 0;
-            set_tty_echo(1);
-            while ((k = read_key()) != '\n' && k != '\r' && i < sizeof(buf)-1)
-                if (k > 0)
-                    buf[i++] = k;
-            buf[i] = 0;
-            set_tty_echo(0);
-            fprintf(stderr, "\n");
-            if (k <= 0 || sscanf(buf, "%d", &debug)!=1)
-                fprintf(stderr,"error parsing debug value\n");
-        }
-        for (InputStream *ist = ist_iter(NULL); ist; ist = ist_iter(ist))
-            ist->dec_ctx->debug = debug;
-        for (OutputStream *ost = ost_iter(NULL); ost; ost = ost_iter(ost)) {
-            if (ost->enc_ctx)
-                ost->enc_ctx->debug = debug;
-        }
-        if(debug) av_log_set_level(AV_LOG_DEBUG);
-        fprintf(stderr,"debug=%d\n", debug);
-    }
     if (key == '?'){
         fprintf(stderr, "key    function\n"
                         "?      show this help\n"
@@ -1810,7 +1792,6 @@ static int check_keyboard_interaction(int64_t cur_time)
                         "-      decrease verbosity\n"
                         "c      Send command to first matching filter supporting it\n"
                         "C      Send/Queue command to all matching filters\n"
-                        "D      cycle through available debug modes\n"
                         "h      dump packets/hex press to cycle through the 3 states\n"
                         "q      quit\n"
                         "s      Show QP histogram\n"

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Paul B Mahol
+ * Copyright (c) 2023 Paul B Mahol
  *
  * This file is part of FFmpeg.
  *
@@ -18,7 +18,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "libavutil/channel_layout.h"
 #include "libavutil/common.h"
 #include "libavutil/float_dsp.h"
 #include "libavutil/opt.h"
@@ -38,49 +37,47 @@ enum OutModes {
     NB_OMODES
 };
 
-typedef struct AudioNLMSContext {
+typedef struct AudioRLSContext {
     const AVClass *class;
 
     int order;
-    float mu;
-    float eps;
-    float leakage;
+    float lambda;
+    float delta;
     int output_mode;
 
     int kernel_size;
     AVFrame *offset;
     AVFrame *delay;
     AVFrame *coeffs;
-    AVFrame *tmp;
+    AVFrame *p, *dp;
+    AVFrame *gains;
+    AVFrame *u, *tmp;
 
     AVFrame *frame[2];
 
-    int anlmf;
-
     AVFloatDSPContext *fdsp;
-} AudioNLMSContext;
+} AudioRLSContext;
 
-#define OFFSET(x) offsetof(AudioNLMSContext, x)
+#define OFFSET(x) offsetof(AudioRLSContext, x)
 #define A AV_OPT_FLAG_AUDIO_PARAM|AV_OPT_FLAG_FILTERING_PARAM
 #define AT AV_OPT_FLAG_AUDIO_PARAM|AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_RUNTIME_PARAM
 
-static const AVOption anlms_options[] = {
-    { "order",   "set the filter order",   OFFSET(order),   AV_OPT_TYPE_INT,   {.i64=256},  1, INT16_MAX, A },
-    { "mu",      "set the filter mu",      OFFSET(mu),      AV_OPT_TYPE_FLOAT, {.dbl=0.75}, 0, 2, AT },
-    { "eps",     "set the filter eps",     OFFSET(eps),     AV_OPT_TYPE_FLOAT, {.dbl=1},    0, 1, AT },
-    { "leakage", "set the filter leakage", OFFSET(leakage), AV_OPT_TYPE_FLOAT, {.dbl=0},    0, 1, AT },
+static const AVOption arls_options[] = {
+    { "order",    "set the filter order",  OFFSET(order),  AV_OPT_TYPE_INT,   {.i64=16}, 1, INT16_MAX, A },
+    { "lambda",   "set the filter lambda", OFFSET(lambda), AV_OPT_TYPE_FLOAT, {.dbl=1.f}, 0, 1, AT },
+    { "delta",    "set the filter delta",  OFFSET(delta),  AV_OPT_TYPE_FLOAT, {.dbl=2.f}, 0, INT16_MAX, A },
     { "out_mode", "set output mode",       OFFSET(output_mode), AV_OPT_TYPE_INT, {.i64=OUT_MODE}, 0, NB_OMODES-1, AT, "mode" },
-    {  "i", "input",                 0,          AV_OPT_TYPE_CONST,    {.i64=IN_MODE},      0, 0, AT, "mode" },
-    {  "d", "desired",               0,          AV_OPT_TYPE_CONST,    {.i64=DESIRED_MODE}, 0, 0, AT, "mode" },
-    {  "o", "output",                0,          AV_OPT_TYPE_CONST,    {.i64=OUT_MODE},     0, 0, AT, "mode" },
-    {  "n", "noise",                 0,          AV_OPT_TYPE_CONST,    {.i64=NOISE_MODE},   0, 0, AT, "mode" },
-    {  "e", "error",                 0,          AV_OPT_TYPE_CONST,    {.i64=ERROR_MODE},   0, 0, AT, "mode" },
+    {  "i", "input",   0, AV_OPT_TYPE_CONST, {.i64=IN_MODE},      0, 0, AT, "mode" },
+    {  "d", "desired", 0, AV_OPT_TYPE_CONST, {.i64=DESIRED_MODE}, 0, 0, AT, "mode" },
+    {  "o", "output",  0, AV_OPT_TYPE_CONST, {.i64=OUT_MODE},     0, 0, AT, "mode" },
+    {  "n", "noise",   0, AV_OPT_TYPE_CONST, {.i64=NOISE_MODE},   0, 0, AT, "mode" },
+    {  "e", "error",   0, AV_OPT_TYPE_CONST, {.i64=ERROR_MODE},   0, 0, AT, "mode" },
     { NULL }
 };
 
-AVFILTER_DEFINE_CLASS_EXT(anlms, "anlm(f|s)", anlms_options);
+AVFILTER_DEFINE_CLASS(arls);
 
-static float fir_sample(AudioNLMSContext *s, float sample, float *delay,
+static float fir_sample(AudioRLSContext *s, float sample, float *delay,
                         float *coeffs, float *tmp, int *offset)
 {
     const int order = s->order;
@@ -98,35 +95,63 @@ static float fir_sample(AudioNLMSContext *s, float sample, float *delay,
     return output;
 }
 
-static float process_sample(AudioNLMSContext *s, float input, float desired,
-                            float *delay, float *coeffs, float *tmp, int *offsetp)
+static float process_sample(AudioRLSContext *s, float input, float desired, int ch)
 {
+    float *coeffs = (float *)s->coeffs->extended_data[ch];
+    float *delay = (float *)s->delay->extended_data[ch];
+    float *gains = (float *)s->gains->extended_data[ch];
+    float *tmp = (float *)s->tmp->extended_data[ch];
+    float *u = (float *)s->u->extended_data[ch];
+    float *p = (float *)s->p->extended_data[ch];
+    float *dp = (float *)s->dp->extended_data[ch];
+    int *offsetp = (int *)s->offset->extended_data[ch];
+    const int kernel_size = s->kernel_size;
     const int order = s->order;
-    const float leakage = s->leakage;
-    const float mu = s->mu;
-    const float a = 1.f - leakage;
-    float sum, output, e, norm, b;
+    const float lambda = s->lambda;
     int offset = *offsetp;
+    float g = lambda;
+    float output, e;
 
     delay[offset + order] = input;
 
     output = fir_sample(s, input, delay, coeffs, tmp, offsetp);
     e = desired - output;
 
-    sum = s->fdsp->scalarproduct_float(delay, delay, s->kernel_size);
+    for (int i = 0, pos = offset; i < order; i++, pos++) {
+        const int ikernel_size = i * kernel_size;
 
-    norm = s->eps + sum;
-    b = mu * e / norm;
-    if (s->anlmf)
-        b *= e * e;
+        u[i] = 0.f;
+        for (int k = 0, pos = offset; k < order; k++, pos++)
+            u[i] += p[ikernel_size + k] * delay[pos];
 
-    memcpy(tmp, delay + offset, order * sizeof(float));
+        g += u[i] * delay[pos];
+    }
 
-    s->fdsp->vector_fmul_scalar(coeffs, coeffs, a, s->kernel_size);
+    g = 1.f / g;
 
-    s->fdsp->vector_fmac_scalar(coeffs, tmp, b, s->kernel_size);
+    for (int i = 0; i < order; i++) {
+        const int ikernel_size = i * kernel_size;
 
-    memcpy(coeffs + order, coeffs, order * sizeof(float));
+        gains[i] = u[i] * g;
+        coeffs[i] = coeffs[order + i] = coeffs[i] + gains[i] * e;
+        tmp[i] = 0.f;
+        for (int k = 0, pos = offset; k < order; k++, pos++)
+            tmp[i] += p[ikernel_size + k] * delay[pos];
+    }
+
+    for (int i = 0; i < order; i++) {
+        const int ikernel_size = i * kernel_size;
+
+        for (int k = 0; k < order; k++)
+            dp[ikernel_size + k] = gains[i] * tmp[k];
+    }
+
+    for (int i = 0; i < order; i++) {
+        const int ikernel_size = i * kernel_size;
+
+        for (int k = 0; k < order; k++)
+            p[ikernel_size + k] = (p[ikernel_size + k] - (dp[ikernel_size + k] + dp[kernel_size * k + i]) * 0.5f) * lambda;
+    }
 
     switch (s->output_mode) {
     case IN_MODE:       output = input;         break;
@@ -140,7 +165,7 @@ static float process_sample(AudioNLMSContext *s, float input, float desired,
 
 static int process_channels(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
 {
-    AudioNLMSContext *s = ctx->priv;
+    AudioRLSContext *s = ctx->priv;
     AVFrame *out = arg;
     const int start = (out->ch_layout.nb_channels * jobnr) / nb_jobs;
     const int end = (out->ch_layout.nb_channels * (jobnr+1)) / nb_jobs;
@@ -148,14 +173,10 @@ static int process_channels(AVFilterContext *ctx, void *arg, int jobnr, int nb_j
     for (int c = start; c < end; c++) {
         const float *input = (const float *)s->frame[0]->extended_data[c];
         const float *desired = (const float *)s->frame[1]->extended_data[c];
-        float *delay = (float *)s->delay->extended_data[c];
-        float *coeffs = (float *)s->coeffs->extended_data[c];
-        float *tmp = (float *)s->tmp->extended_data[c];
-        int *offset = (int *)s->offset->extended_data[c];
         float *output = (float *)out->extended_data[c];
 
         for (int n = 0; n < out->nb_samples; n++) {
-            output[n] = process_sample(s, input[n], desired[n], delay, coeffs, tmp, offset);
+            output[n] = process_sample(s, input[n], desired[n], c);
             if (ctx->is_disabled)
                 output[n] = input[n];
         }
@@ -166,7 +187,7 @@ static int process_channels(AVFilterContext *ctx, void *arg, int jobnr, int nb_j
 
 static int activate(AVFilterContext *ctx)
 {
-    AudioNLMSContext *s = ctx->priv;
+    AudioRLSContext *s = ctx->priv;
     int i, ret, status;
     int nb_samples;
     int64_t pts;
@@ -232,9 +253,8 @@ static int activate(AVFilterContext *ctx)
 static int config_output(AVFilterLink *outlink)
 {
     AVFilterContext *ctx = outlink->src;
-    AudioNLMSContext *s = ctx->priv;
+    AudioRLSContext *s = ctx->priv;
 
-    s->anlmf = !strcmp(ctx->filter->name, "anlmf");
     s->kernel_size = FFALIGN(s->order, 16);
 
     if (!s->offset)
@@ -243,17 +263,40 @@ static int config_output(AVFilterLink *outlink)
         s->delay = ff_get_audio_buffer(outlink, 2 * s->kernel_size);
     if (!s->coeffs)
         s->coeffs = ff_get_audio_buffer(outlink, 2 * s->kernel_size);
+    if (!s->gains)
+        s->gains = ff_get_audio_buffer(outlink, s->kernel_size);
+    if (!s->p)
+        s->p = ff_get_audio_buffer(outlink, s->kernel_size * s->kernel_size);
+    if (!s->dp)
+        s->dp = ff_get_audio_buffer(outlink, s->kernel_size * s->kernel_size);
+    if (!s->u)
+        s->u = ff_get_audio_buffer(outlink, s->kernel_size);
     if (!s->tmp)
         s->tmp = ff_get_audio_buffer(outlink, s->kernel_size);
-    if (!s->delay || !s->coeffs || !s->offset || !s->tmp)
+
+    if (!s->delay || !s->coeffs || !s->p || !s->dp || !s->gains || !s->offset || !s->u || !s->tmp)
         return AVERROR(ENOMEM);
+
+    for (int ch = 0; ch < s->offset->ch_layout.nb_channels; ch++) {
+        int *dst = (int *)s->offset->extended_data[ch];
+
+        for (int i = 0; i < s->kernel_size; i++)
+            dst[0] = s->kernel_size - 1;
+    }
+
+    for (int ch = 0; ch < s->p->ch_layout.nb_channels; ch++) {
+        float *dst = (float *)s->p->extended_data[ch];
+
+        for (int i = 0; i < s->kernel_size; i++)
+            dst[i * s->kernel_size + i] = s->delta;
+    }
 
     return 0;
 }
 
 static av_cold int init(AVFilterContext *ctx)
 {
-    AudioNLMSContext *s = ctx->priv;
+    AudioRLSContext *s = ctx->priv;
 
     s->fdsp = avpriv_float_dsp_alloc(0);
     if (!s->fdsp)
@@ -264,12 +307,16 @@ static av_cold int init(AVFilterContext *ctx)
 
 static av_cold void uninit(AVFilterContext *ctx)
 {
-    AudioNLMSContext *s = ctx->priv;
+    AudioRLSContext *s = ctx->priv;
 
     av_freep(&s->fdsp);
     av_frame_free(&s->delay);
     av_frame_free(&s->coeffs);
+    av_frame_free(&s->gains);
     av_frame_free(&s->offset);
+    av_frame_free(&s->p);
+    av_frame_free(&s->dp);
+    av_frame_free(&s->u);
     av_frame_free(&s->tmp);
 }
 
@@ -292,27 +339,11 @@ static const AVFilterPad outputs[] = {
     },
 };
 
-const AVFilter ff_af_anlms = {
-    .name           = "anlms",
-    .description    = NULL_IF_CONFIG_SMALL("Apply Normalized Least-Mean-Squares algorithm to first audio stream."),
-    .priv_size      = sizeof(AudioNLMSContext),
-    .priv_class     = &anlms_class,
-    .init           = init,
-    .uninit         = uninit,
-    .activate       = activate,
-    FILTER_INPUTS(inputs),
-    FILTER_OUTPUTS(outputs),
-    FILTER_SINGLE_SAMPLEFMT(AV_SAMPLE_FMT_FLTP),
-    .flags          = AVFILTER_FLAG_SUPPORT_TIMELINE_INTERNAL |
-                      AVFILTER_FLAG_SLICE_THREADS,
-    .process_command = ff_filter_process_command,
-};
-
-const AVFilter ff_af_anlmf = {
-    .name           = "anlmf",
-    .description    = NULL_IF_CONFIG_SMALL("Apply Normalized Least-Mean-Fourth algorithm to first audio stream."),
-    .priv_size      = sizeof(AudioNLMSContext),
-    .priv_class     = &anlms_class,
+const AVFilter ff_af_arls = {
+    .name           = "arls",
+    .description    = NULL_IF_CONFIG_SMALL("Apply Recursive Least Squares algorithm to first audio stream."),
+    .priv_size      = sizeof(AudioRLSContext),
+    .priv_class     = &arls_class,
     .init           = init,
     .uninit         = uninit,
     .activate       = activate,

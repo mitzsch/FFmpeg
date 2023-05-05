@@ -31,8 +31,8 @@ static int return_frame(AVFilterContext *ctx, int is_second)
     int tff, ret;
 
     if (yadif->parity == -1) {
-        tff = yadif->cur->interlaced_frame ?
-              yadif->cur->top_field_first : 1;
+        tff = (yadif->cur->flags & AV_FRAME_FLAG_INTERLACED) ?
+              !!(yadif->cur->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) : 1;
     } else {
         tff = yadif->parity ^ 1;
     }
@@ -43,7 +43,12 @@ static int return_frame(AVFilterContext *ctx, int is_second)
             return AVERROR(ENOMEM);
 
         av_frame_copy_props(yadif->out, yadif->cur);
+#if FF_API_INTERLACED_FRAME
+FF_DISABLE_DEPRECATION_WARNINGS
         yadif->out->interlaced_frame = 0;
+FF_ENABLE_DEPRECATION_WARNINGS
+#endif
+        yadif->out->flags &= ~AV_FRAME_FLAG_INTERLACED;
         if (yadif->current_field == YADIF_FIELD_BACK_END)
             yadif->current_field = YADIF_FIELD_END;
     }
@@ -128,10 +133,10 @@ int ff_yadif_filter_frame(AVFilterLink *link, AVFrame *frame)
     if (!yadif->prev)
         return 0;
 
-    if ((yadif->deint && !yadif->cur->interlaced_frame) ||
+    if ((yadif->deint && !(yadif->cur->flags & AV_FRAME_FLAG_INTERLACED)) ||
         ctx->is_disabled ||
-        (yadif->deint && !yadif->prev->interlaced_frame && yadif->prev->repeat_pict) ||
-        (yadif->deint && !yadif->next->interlaced_frame && yadif->next->repeat_pict)
+        (yadif->deint && !(yadif->prev->flags & AV_FRAME_FLAG_INTERLACED) && yadif->prev->repeat_pict) ||
+        (yadif->deint && !(yadif->next->flags & AV_FRAME_FLAG_INTERLACED) && yadif->next->repeat_pict)
     ) {
         yadif->out  = av_frame_clone(yadif->cur);
         if (!yadif->out)
@@ -148,7 +153,12 @@ int ff_yadif_filter_frame(AVFilterLink *link, AVFrame *frame)
         return AVERROR(ENOMEM);
 
     av_frame_copy_props(yadif->out, yadif->cur);
+#if FF_API_INTERLACED_FRAME
+FF_DISABLE_DEPRECATION_WARNINGS
     yadif->out->interlaced_frame = 0;
+FF_ENABLE_DEPRECATION_WARNINGS
+#endif
+    yadif->out->flags &= ~AV_FRAME_FLAG_INTERLACED;
 
     if (yadif->out->pts != AV_NOPTS_VALUE)
         yadif->out->pts *= 2;

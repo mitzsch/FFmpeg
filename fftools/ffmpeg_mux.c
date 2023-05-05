@@ -742,7 +742,7 @@ static void mux_final_stats(Muxer *mux)
 
         av_log(of, AV_LOG_VERBOSE, "  Output stream #%d:%d (%s): ",
                of->index, j, av_get_media_type_string(type));
-        if (ost->enc_ctx) {
+        if (ost->enc) {
             av_log(of, AV_LOG_VERBOSE, "%"PRIu64" frames encoded",
                    ost->frames_encoded);
             if (type == AVMEDIA_TYPE_AUDIO)
@@ -845,7 +845,6 @@ static void ost_free(OutputStream **post)
 
     av_bsf_free(&ms->bsf_ctx);
 
-    av_frame_free(&ost->filtered_frame);
     av_packet_free(&ost->pkt);
     av_dict_free(&ost->encoder_opts);
 
