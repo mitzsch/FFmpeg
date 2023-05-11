@@ -198,6 +198,7 @@ extern const AVFilter ff_vf_boxblur;
 extern const AVFilter ff_vf_boxblur_opencl;
 extern const AVFilter ff_vf_bwdif;
 extern const AVFilter ff_vf_cas;
+extern const AVFilter ff_vf_ccrepack;
 extern const AVFilter ff_vf_chromaber_vulkan;
 extern const AVFilter ff_vf_chromahold;
 extern const AVFilter ff_vf_chromakey;
@@ -557,6 +558,7 @@ extern const AVFilter ff_vsrc_smptehdbars;
 extern const AVFilter ff_vsrc_testsrc;
 extern const AVFilter ff_vsrc_testsrc2;
 extern const AVFilter ff_vsrc_yuvtestsrc;
+extern const AVFilter ff_vsrc_zoneplate;
 
 extern const AVFilter ff_vsink_nullsink;
 

@@ -769,24 +769,6 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     first_report = 0;
 }
 
-int ifilter_parameters_from_codecpar(InputFilter *ifilter, AVCodecParameters *par)
-{
-    int ret;
-
-    // We never got any input. Set a fake format, which will
-    // come from libavformat.
-    ifilter->format                 = par->format;
-    ifilter->sample_rate            = par->sample_rate;
-    ifilter->width                  = par->width;
-    ifilter->height                 = par->height;
-    ifilter->sample_aspect_ratio    = par->sample_aspect_ratio;
-    ret = av_channel_layout_copy(&ifilter->ch_layout, &par->ch_layout);
-    if (ret < 0)
-        return ret;
-
-    return 0;
-}
-
 static void check_decode_result(InputStream *ist, int *got_output, int ret)
 {
     if (*got_output || ret<0)
@@ -1564,7 +1546,7 @@ static int transcode_init(void)
     /* init framerate emulation */
     for (int i = 0; i < nb_input_files; i++) {
         InputFile *ifile = input_files[i];
-        if (ifile->readrate || ifile->rate_emu)
+        if (ifile->readrate)
             for (int j = 0; j < ifile->nb_streams; j++)
                 ifile->streams[j]->start = av_gettime_relative();
     }
@@ -1667,25 +1649,14 @@ static int transcode_init(void)
     return 0;
 }
 
-/* Return 1 if there remain streams where more output is wanted, 0 otherwise. */
-static int need_output(void)
-{
-    for (OutputStream *ost = ost_iter(NULL); ost; ost = ost_iter(ost)) {
-        if (ost->finished)
-            continue;
-
-        return 1;
-    }
-
-    return 0;
-}
-
 /**
  * Select the output stream to process.
  *
- * @return  selected output stream, or NULL if none available
+ * @retval 0 an output stream was selected
+ * @retval AVERROR(EAGAIN) need to wait until more input is available
+ * @retval AVERROR_EOF no more streams need output
  */
-static OutputStream *choose_output(void)
+static int choose_output(OutputStream **post)
 {
     int64_t opts_min = INT64_MAX;
     OutputStream *ost_min = NULL;
@@ -1704,15 +1675,19 @@ static OutputStream *choose_output(void)
                     ost->initialized, ost->inputs_done, ost->finished);
         }
 
-        if (!ost->initialized && !ost->inputs_done && !ost->finished)
-            return ost->unavailable ? NULL : ost;
-
+        if (!ost->initialized && !ost->inputs_done && !ost->finished) {
+            ost_min = ost;
+            break;
+        }
         if (!ost->finished && opts < opts_min) {
             opts_min = opts;
-            ost_min  = ost->unavailable ? NULL : ost;
+            ost_min  = ost;
         }
     }
-    return ost_min;
+    if (!ost_min)
+        return AVERROR_EOF;
+    *post = ost_min;
+    return ost_min->unavailable ? AVERROR(EAGAIN) : 0;
 }
 
 static void set_tty_echo(int on)
@@ -1797,14 +1772,6 @@ static int check_keyboard_interaction(int64_t cur_time)
                         "s      Show QP histogram\n"
         );
     }
-    return 0;
-}
-
-static int got_eagain(void)
-{
-    for (OutputStream *ost = ost_iter(NULL); ost; ost = ost_iter(ost))
-        if (ost->unavailable)
-            return 1;
     return 0;
 }
 
@@ -1994,9 +1961,6 @@ static int process_input(int file_index)
     ist->data_size += pkt->size;
     ist->nb_packets++;
 
-    if (ist->discard)
-        goto discard_packet;
-
     /* add the stream-global side data to the first packet */
     if (ist->nb_packets == 1) {
         for (i = 0; i < ist->st->nb_side_data; i++) {
@@ -2035,7 +1999,6 @@ static int process_input(int file_index)
 
     process_input_packet(ist, pkt, 0);
 
-discard_packet:
     av_packet_free(&pkt);
 
     return 0;
@@ -2046,51 +2009,16 @@ discard_packet:
  *
  * @return  0 for success, <0 for error
  */
-static int transcode_step(void)
+static int transcode_step(OutputStream *ost)
 {
-    OutputStream *ost;
     InputStream  *ist = NULL;
     int ret;
 
-    ost = choose_output();
-    if (!ost) {
-        if (got_eagain()) {
-            reset_eagain();
-            av_usleep(10000);
-            return 0;
-        }
-        av_log(NULL, AV_LOG_VERBOSE, "No more inputs to read from, finishing.\n");
-        return AVERROR_EOF;
-    }
-
-    if (ost->filter && !ost->filter->graph->graph) {
-        if (ifilter_has_all_input_formats(ost->filter->graph)) {
-            ret = configure_filtergraph(ost->filter->graph);
-            if (ret < 0) {
-                av_log(NULL, AV_LOG_ERROR, "Error reinitializing filters!\n");
-                return ret;
-            }
-        }
-    }
-
-    if (ost->filter && ost->filter->graph->graph) {
+    if (ost->filter) {
         if ((ret = fg_transcode_step(ost->filter->graph, &ist)) < 0)
             return ret;
         if (!ist)
             return 0;
-    } else if (ost->filter) {
-        int i;
-        for (i = 0; i < ost->filter->graph->nb_inputs; i++) {
-            InputFilter *ifilter = ost->filter->graph->inputs[i];
-            if (!ifilter->ist->got_output && !input_files[ifilter->ist->file_index]->eof_reached) {
-                ist = ifilter->ist;
-                break;
-            }
-        }
-        if (!ist) {
-            ost->inputs_done = 1;
-            return 0;
-        }
     } else {
         ist = ost->ist;
         av_assert0(ist);
@@ -2129,6 +2057,7 @@ static int transcode(void)
     timer_start = av_gettime_relative();
 
     while (!received_sigterm) {
+        OutputStream *ost;
         int64_t cur_time= av_gettime_relative();
 
         /* if 'q' pressed, exits */
@@ -2136,13 +2065,18 @@ static int transcode(void)
             if (check_keyboard_interaction(cur_time) < 0)
                 break;
 
-        /* check if there's any stream where output is still needed */
-        if (!need_output()) {
+        ret = choose_output(&ost);
+        if (ret == AVERROR(EAGAIN)) {
+            reset_eagain();
+            av_usleep(10000);
+            continue;
+        } else if (ret < 0) {
             av_log(NULL, AV_LOG_VERBOSE, "No more output streams to write to, finishing.\n");
+            ret = 0;
             break;
         }
 
-        ret = transcode_step();
+        ret = transcode_step(ost);
         if (ret < 0 && ret != AVERROR_EOF) {
             av_log(NULL, AV_LOG_ERROR, "Error while filtering: %s\n", av_err2str(ret));
             break;

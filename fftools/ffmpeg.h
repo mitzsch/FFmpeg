@@ -126,6 +126,7 @@ typedef struct OptionsContext {
     int loop;
     int rate_emu;
     float readrate;
+    double readrate_initial_burst;
     int accurate_seek;
     int thread_queue_size;
     int input_sync_ref;
@@ -285,11 +286,6 @@ typedef struct InputFilter {
 
     int sample_rate;
     AVChannelLayout ch_layout;
-
-    AVBufferRef *hw_frames_ctx;
-    int32_t *displaymatrix;
-
-    int eof;
 } InputFilter;
 
 typedef struct OutputFilter {
@@ -483,7 +479,6 @@ typedef struct InputFile {
     InputStream **streams;
     int        nb_streams;
 
-    int rate_emu;
     float readrate;
     int accurate_seek;
 
@@ -788,7 +783,13 @@ void sub2video_update(InputStream *ist, int64_t heartbeat_pts, AVSubtitle *sub);
 int ifilter_send_frame(InputFilter *ifilter, AVFrame *frame, int keep_reference);
 int ifilter_send_eof(InputFilter *ifilter, int64_t pts, AVRational tb);
 
-int ifilter_parameters_from_codecpar(InputFilter *ifilter, AVCodecParameters *par);
+/**
+ * Set up fallback filtering parameters from a decoder context. They will only
+ * be used if no frames are ever sent on this input, otherwise the actual
+ * parameters are taken from the frame.
+ */
+int ifilter_parameters_from_dec(InputFilter *ifilter, const AVCodecContext *dec);
+
 int ifilter_has_all_input_formats(FilterGraph *fg);
 
 /**

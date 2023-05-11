@@ -81,6 +81,8 @@ typedef struct Demuxer {
     /* number of streams that the user was warned of */
     int nb_streams_warn;
 
+    double readrate_initial_burst;
+
     AVThreadMessageQueue *in_thread_queue;
     int                   thread_queue_size;
     pthread_t             thread;
@@ -316,7 +318,8 @@ static void *input_thread(void *arg)
 
         /* the following test is needed in case new streams appear
            dynamically in stream : we ignore them */
-        if (pkt->stream_index >= f->nb_streams) {
+        if (pkt->stream_index >= f->nb_streams ||
+            f->streams[pkt->stream_index]->discard) {
             report_new_stream(d, pkt);
             av_packet_unref(pkt);
             continue;
@@ -448,21 +451,21 @@ int ifile_get_packet(InputFile *f, AVPacket **pkt)
             return ret;
     }
 
-    if (f->readrate || f->rate_emu) {
+    if (f->readrate) {
         int i;
         int64_t file_start = copy_ts * (
                               (f->start_time_effective != AV_NOPTS_VALUE ? f->start_time_effective * !start_at_zero : 0) +
                               (f->start_time != AV_NOPTS_VALUE ? f->start_time : 0)
                              );
-        float scale = f->rate_emu ? 1.0 : f->readrate;
+        int64_t burst_until = AV_TIME_BASE * d->readrate_initial_burst;
         for (i = 0; i < f->nb_streams; i++) {
             InputStream *ist = f->streams[i];
             int64_t stream_ts_offset, pts, now;
-            if (!ist->nb_packets || (ist->decoding_needed && !ist->got_output)) continue;
+            if (!ist->nb_packets) continue;
             stream_ts_offset = FFMAX(ist->first_dts != AV_NOPTS_VALUE ? ist->first_dts : 0, file_start);
             pts = av_rescale(ist->dts, 1000000, AV_TIME_BASE);
-            now = (av_gettime_relative() - ist->start) * scale + stream_ts_offset;
-            if (pts > now)
+            now = (av_gettime_relative() - ist->start) * f->readrate + stream_ts_offset;
+            if (pts - burst_until > now)
                 return AVERROR(EAGAIN);
         }
     }
@@ -584,10 +587,17 @@ void ist_output_add(InputStream *ist, OutputStream *ost)
 
 void ist_filter_add(InputStream *ist, InputFilter *ifilter, int is_simple)
 {
+    int ret;
+
     ist_use(ist, is_simple ? DECODING_FOR_OST : DECODING_FOR_FILTER);
 
     GROW_ARRAY(ist->filters, ist->nb_filters);
     ist->filters[ist->nb_filters - 1] = ifilter;
+
+    // initialize fallback parameters for filtering
+    ret = ifilter_parameters_from_dec(ifilter, ist->dec_ctx);
+    if (ret < 0)
+        report_and_exit(ret);
 }
 
 static const AVCodec *choose_decoder(const OptionsContext *o, AVFormatContext *s, AVStream *st,
@@ -1220,7 +1230,6 @@ int ifile_open(const OptionsContext *o, const char *filename)
     f->input_sync_ref = o->input_sync_ref;
     f->input_ts_offset = o->input_ts_offset;
     f->ts_offset  = o->input_ts_offset - (copy_ts ? (start_at_zero && ic->start_time != AV_NOPTS_VALUE ? ic->start_time : 0) : timestamp);
-    f->rate_emu   = o->rate_emu;
     f->accurate_seek = o->accurate_seek;
     d->loop = o->loop;
     d->duration = 0;
@@ -1231,9 +1240,24 @@ int ifile_open(const OptionsContext *o, const char *filename)
         av_log(d, AV_LOG_ERROR, "Option -readrate is %0.3f; it must be non-negative.\n", f->readrate);
         exit_program(1);
     }
-    if (f->readrate && f->rate_emu) {
-        av_log(d, AV_LOG_WARNING, "Both -readrate and -re set. Using -readrate %0.3f.\n", f->readrate);
-        f->rate_emu = 0;
+    if (o->rate_emu) {
+        if (f->readrate) {
+            av_log(d, AV_LOG_WARNING, "Both -readrate and -re set. Using -readrate %0.3f.\n", f->readrate);
+        } else
+            f->readrate = 1.0f;
+    }
+
+    if (f->readrate) {
+        d->readrate_initial_burst = o->readrate_initial_burst ? o->readrate_initial_burst : 0.5;
+        if (d->readrate_initial_burst < 0.0) {
+            av_log(d, AV_LOG_ERROR,
+                   "Option -readrate_initial_burst is %0.3f; it must be non-negative.\n",
+                   d->readrate_initial_burst);
+            exit_program(1);
+        }
+    } else if (o->readrate_initial_burst) {
+        av_log(d, AV_LOG_WARNING, "Option -readrate_initial_burst ignored "
+               "since neither -readrate nor -re were given\n");
     }
 
     d->thread_queue_size = o->thread_queue_size;
