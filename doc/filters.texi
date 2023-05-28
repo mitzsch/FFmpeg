@@ -3316,6 +3316,7 @@ Available keys for each channel are:
 @var{Number_of_NaNs}
 @var{Number_of_denormals}
 @var{Peak_count}
+@var{Abs_Peak_count}
 @var{Peak_level}
 @var{RMS_difference}
 @var{RMS_peak}
@@ -3340,6 +3341,7 @@ and for @code{Overall}:
 @var{Number_of_denormals}
 @var{Number_of_samples}
 @var{Peak_count}
+@var{Abs_Peak_count}
 @var{Peak_level}
 @var{RMS_difference}
 @var{RMS_level}
@@ -3432,6 +3434,10 @@ number of samples
 @item Peak_count
 number of occasions (not the number of samples) that the signal attained either
 @var{Min_level} or @var{Max_level}
+
+@item Abs_Peak_count
+number of occasions that the absolute samples taken from the signal attained
+max absolute value of @var{Min_level} and @var{Max_level}
 
 @item Peak_level
 standard peak level measured in dBFS
@@ -6413,19 +6419,20 @@ trimming. Default is 0, which is equal to trimming all samples detected
 as silence.
 
 @item start_mode
-Specify mode of detection of silence end in start of multi-channel audio.
+Specify mode of detection of silence end at start of multi-channel audio.
 Can be @var{any} or @var{all}. Default is @var{any}.
-With @var{any}, any sample that is detected as non-silence will cause
-stopped trimming of silence.
-With @var{all}, only if all channels are detected as non-silence will cause
-stopped trimming of silence.
+With @var{any}, any sample from any channel that is detected as non-silence
+will trigger end of silence trimming at start of audio stream.
+With @var{all}, only if every sample from every channel is detected as non-silence
+will trigger end of silence trimming at start of audio stream, limited usage.
 
 @item stop_periods
-Set the count for trimming silence from the end of audio.
+Set the count for trimming silence from the end of audio. When specifying a
+positive value, it trims audio after it finds specified silence period.
 To remove silence from the middle of a file, specify a @var{stop_periods}
 that is negative. This value is then treated as a positive value and is
 used to indicate the effect should restart processing as specified by
-@var{start_periods}, making it suitable for removing periods of silence
+@var{stop_periods}, making it suitable for removing periods of silence
 in the middle of the audio.
 Default value is @code{0}.
 
@@ -6447,22 +6454,47 @@ trimming. Default is 0, which is equal to trimming all samples detected
 as silence.
 
 @item stop_mode
-Specify mode of detection of silence start in end of multi-channel audio.
-Can be @var{any} or @var{all}. Default is @var{any}.
-With @var{any}, any sample that is detected as non-silence will cause
-stopped trimming of silence.
-With @var{all}, only if all channels are detected as non-silence will cause
-stopped trimming of silence.
+Specify mode of detection of silence start after start of multi-channel audio.
+Can be @var{any} or @var{all}. Default is @var{all}.
+With @var{any}, any sample from any channel that is detected as silence
+will trigger start of silence trimming after start of audio stream, limited usage.
+With @var{all}, only if every sample from every channel is detected as silence
+will trigger start of silence trimming after start of audio stream.
 
 @item detection
-Set how is silence detected. Can be @code{rms} or @code{peak}. Second is faster
-and works better with digital silence which is exactly 0.
+Set how is silence detected.
+@table @option
+@item avg
+Mean of absolute values of samples in moving window.
+@item rms
+Root squared mean of absolute values of samples in moving window.
+@item peak
+Maximum of absolute values of samples in moving window.
+@item median
+Median of absolute values of samples in moving window.
+@item ptp
+Absolute of max peak to min peak difference of samples in moving window.
+@end table
 Default value is @code{rms}.
 
 @item window
 Set duration in number of seconds used to calculate size of window in number
-of samples for detecting silence.
+of samples for detecting silence. Using @code{0} will effectively disable
+any windowing and use only single sample per channel for silence detection.
+In that case it may be needed to also set @option{start_silence} and/or
+@option{stop_silence} to nonzero values with also @option{start_duration} and/or
+@option{stop_duration} to nonzero values.
 Default value is @code{0.02}. Allowed range is from @code{0} to @code{10}.
+
+@item timestamp
+Set processing mode of every audio frame output timestamp.
+@table @option
+@item write
+Full timestamps rewrite, keep only the start time for the first output frame.
+@item copy
+Non-dropped frames are left with same timestamp as input audio frame.
+@end table
+Defaults value is @code{write}.
 @end table
 
 @subsection Examples
@@ -6490,7 +6522,30 @@ silence is detected in all channels at same positions in stream:
 @example
 silenceremove=window=0:detection=peak:stop_mode=all:start_mode=all:stop_periods=-1:stop_threshold=0
 @end example
+
+@item
+Trim every 2nd encountered silence period from beginning to end where there is
+more than 1 second of silence per silence period in audio:
+@example
+silenceremove=stop_periods=-2:stop_duration=1:stop_threshold=-90dB
+@end example
+
+@item
+Similar as above, but keep maximum of 0.5 seconds of silence from each trimmed period:
+@example
+silenceremove=stop_periods=-2:stop_duration=1:stop_threshold=-90dB:stop_silence=0.5
+@end example
+
+@item
+Similar as above, but keep maximum of 1.5 seconds of silence from start of audio:
+@example
+silenceremove=stop_periods=-2:stop_duration=1:stop_threshold=-90dB:stop_silence=0.5:start_periods=1:start_duration=1:start_silence=1.5:stop_threshold=-90dB
+@end example
 @end itemize
+
+@subsection Commands
+
+This filter supports some above options as @ref{commands}.
 
 @section sofalizer
 
@@ -14639,15 +14694,33 @@ Set video output size. Default is @var{hd720}.
 Set video opacity. Default is @var{0.9}. Allowed range is from @var{0} to @var{1}.
 
 @item mode, m
-Set output mode, can be @var{full} or @var{compact} or @var{nozero}.
-In @var{compact} mode only filters with some queued frames have displayed stats.
-In @var{nozero} mode only non-zero stats values are displayed.
+Set output mode flags.
+
+Available values for flags are:
+@table @samp
+@item full
+No any filtering. Default.
+@item compact
+Show only filters with queued frames.
+@item nozero
+Show only filters with non-zero stats.
+@item noeof
+Show only filters with non-eof stat.
+@item nodisabled
+Show only filters that are enabled in timeline.
+@end table
 
 @item flags, f
 Set flags which enable which stats are shown in video.
 
 Available values for flags are:
 @table @samp
+@item none
+All flags turned off.
+
+@item all
+All flags turned on.
+
 @item queue
 Display number of queued frames in each link.
 
@@ -14695,6 +14768,9 @@ Display number of samples given out from filter.
 
 @item sample_count_delta
 Display delta number of samples between above two values.
+
+@item disabled
+Show the timeline filter status.
 @end table
 
 @item rate, r
@@ -16320,10 +16396,11 @@ logarithmic scale between @code{0.0} and @code{100.0}. Default to @code{5.5}
 and @code{10.0}, respectively. Setting either to a negative value disables
 this functionality.
 
-@item overshoot
-Peak smoothing overshoot margin, between @code{0.0} and @code{1.0}. Provides a
-safety margin to prevent clipping as a result of peak smoothing. Defaults to
-@code{0.05}, corresponding to a margin of 5%.
+@item percentile
+Which percentile of the frame brightness histogram to use as the source peak
+for tone-mapping. Defaults to @code{99.995}, a fairly conservative value.
+Setting this to @code{100.0} disables frame histogram measurement and instead
+uses the true peak brightness for tone-mapping.
 @end table
 
 @subsubsection Tone mapping
@@ -16332,37 +16409,36 @@ gamut-mapping when dealing with mismatches between wide-gamut or HDR content.
 In general, libplacebo relies on accurate source tagging and mastering display
 gamut information to produce the best results.
 @table @option
-@item intent
-Rendering intent to use when adapting between different primary color gamuts
-(after tone-mapping).
-@table @samp
-@item perceptual
-Perceptual gamut mapping. Currently equivalent to relative colorimetric.
-@item relative
-Relative colorimetric. This is the default.
-@item absolute
-Absolute colorimetric.
-@item saturation
-Saturation mapping. Forcibly stretches the source gamut to the target gamut.
-@end table
-
 @item gamut_mode
 How to handle out-of-gamut colors that can occur as a result of colorimetric
 gamut mapping.
 @table @samp
 @item clip
-Do nothing, simply clip out-of-range colors to the RGB volume. This is the
-default.
-@item warn
-Highlight out-of-gamut pixels (by coloring them pink).
-@item darken
-Linearly reduces content brightness to preserves saturated details, followed by
-clipping the remaining out-of-gamut colors. As the name implies, this makes
-everything darker, but provides a good balance between preserving details and
-colors.
+Do nothing, simply clip out-of-range colors to the RGB volume. Low quality but
+extremely fast.
+@item perceptual
+Perceptually soft-clip colors to the gamut volume. This is the default.
+@item relative
+Relative colorimetric hard-clip. Similar to @code{perceptual} but without
+the soft knee.
+@item saturation
+Saturation mapping, maps primaries directly to primaries in RGB space.
+Not recommended except for artificial computer graphics for which a bright,
+saturated display is desired.
+@item absolute
+Absolute colorimetric hard-clip. Performs no adjustment of the white point.
 @item desaturate
 Hard-desaturates out-of-gamut colors towards white, while preserving the
-luminance. Has a tendency to shift colors.
+luminance. Has a tendency to distort the visual appearance of bright objects.
+@item darken
+Linearly reduces content brightness to preserves saturated details, followed by
+clipping the remaining out-of-gamut colors.
+@item warn
+Highlight out-of-gamut pixels (by inverting/marking them).
+@item linear
+Linearly reduces chromaticity of the entire image to make it fit within the
+target color volume. Be careful when using this on BT.2020 sources without
+proper mastering metadata, as doing so will lead to excessive desaturation.
 @end table
 
 @item tonemapping
@@ -16441,42 +16517,20 @@ For tunable tone mapping functions, this parameter can be used to fine-tune the
 curve behavior. Refer to the documentation of @code{tonemapping}. The default
 value of @code{0.0} is replaced by the curve's preferred default setting.
 
-@item tonemapping_mode
-This option determines how the tone mapping function specified by
-@code{tonemapping} is applied to the colors in a scene. Possible values are:
-@table @samp
-@item auto
-Automatic selection based on internal heuristics. This is the default.
-@item rgb
-Apply the function per-channel in the RGB colorspace.
-Per-channel tone-mapping in RGB. Guarantees no clipping and heavily desaturates
-the output, but distorts the colors quite significantly. Very similar to the
-"Hollywood" look and feel.
-@item max
-Tone-mapping is performed on the brightest component found in the signal. Good
-at preserving details in highlights, but has a tendency to crush blacks.
-@item hybrid
-Tone-map per-channel for highlights and linearly (luma-based) for
-midtones/shadows, based on a fixed gamma @code{2.4} coefficient curve.
-@item luma
-Tone-map linearly on the luma component (CIE Y), and adjust (desaturate) the
-chromaticities to compensate using a simple constant factor. This is
-essentially the mode used in ITU-R BT.2446 method A.
-@end table
-
 @item inverse_tonemapping
 If enabled, this filter will also attempt stretching SDR signals to fill HDR
 output color volumes. Disabled by default.
-
-@item tonemapping_crosstalk
-Extra tone-mapping crosstalk factor, between @code{0.0} and @code{0.3}. This
-can help reduce issues tone-mapping certain bright spectral colors. Defaults to
-@code{0.04}.
 
 @item tonemapping_lut_size
 Size of the tone-mapping LUT, between @code{2} and @code{1024}. Defaults to
 @code{256}. Note that this figure is squared when combined with
 @code{peak_detect}.
+
+@item hybrid_mix
+If nonzero, this much of the upper range of the tone-mapped result is smoothly
+mixed with a per-channel (LMS) tone-mapped version. Helps avoid unnatural
+blown-out highlights when tone-mapping very bright, strongly saturated colors.
+Defaults to @code{0.2}.
 @end table
 
 @subsubsection Dithering
@@ -22441,6 +22495,13 @@ Set subtitles stream index. @code{subtitles} filter only.
 @item force_style
 Override default style or script info parameters of the subtitles. It accepts a
 string containing ASS style format @code{KEY=VALUE} couples separated by ",".
+
+@item wrap_unicode
+Break lines according to the Unicode Line Breaking Algorithm. Availability requires
+at least libass release 0.17.0 (or LIBASS_VERSION 0x01600010), @emph{and} libass must
+have been built with libunibreak.
+
+The option is enabled by default except for native ASS.
 @end table
 
 If the first key is not specified, it is assumed that the first value
@@ -25133,6 +25194,10 @@ Set one of available transition effects:
 @item zoomin
 @item fadefast
 @item fadeslow
+@item hlwind
+@item hrwind
+@item vuwind
+@item vdwind
 @end table
 Default transition effect is fade.
 
