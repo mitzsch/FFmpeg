@@ -38,6 +38,7 @@ enum SilenceDetect {
     D_PEAK,
     D_MEDIAN,
     D_PTP,
+    D_DEV,
     D_NB
 };
 
@@ -94,6 +95,7 @@ typedef struct SilenceRemoveContext {
     int *stop_back;
 
     int64_t window_duration;
+    int cache_size;
 
     int start_window_pos;
     int start_window_size;
@@ -145,6 +147,7 @@ static const AVOption silenceremove_options[] = {
     {   "peak",          "use max absolute values of samples",                 0,                           AV_OPT_TYPE_CONST,    {.i64=D_PEAK},0,         0, AF, "detection" },
     {   "median",        "use median of absolute values of samples",           0,                           AV_OPT_TYPE_CONST,    {.i64=D_MEDIAN},0,       0, AF, "detection" },
     {   "ptp",           "use absolute of max peak to min peak difference",    0,                           AV_OPT_TYPE_CONST,    {.i64=D_PTP}, 0,         0, AF, "detection" },
+    {   "dev",           "use standard deviation from values of samples",      0,                           AV_OPT_TYPE_CONST,    {.i64=D_DEV}, 0,         0, AF, "detection" },
     { "window",          "set duration of window for silence detection",       OFFSET(window_duration_opt), AV_OPT_TYPE_DURATION, {.i64=20000}, 0, 100000000, AF },
     { "timestamp",       "set how every output frame timestamp is processed",  OFFSET(timestamp_mode),      AV_OPT_TYPE_INT,      {.i64=TS_WRITE}, 0, TS_NB-1, AF, "timestamp" },
     {   "write",         "full timestamps rewrite, keep only the start time",  0,                           AV_OPT_TYPE_CONST,    {.i64=TS_WRITE}, 0,       0, AF, "timestamp" },
@@ -224,10 +227,25 @@ static int config_output(AVFilterLink *outlink)
     AVFilterContext *ctx = outlink->src;
     SilenceRemoveContext *s = ctx->priv;
 
+    switch (s->detection) {
+    case D_AVG:
+    case D_RMS:
+        s->cache_size = 1;
+        break;
+    case D_DEV:
+        s->cache_size = 2;
+        break;
+    case D_MEDIAN:
+    case D_PEAK:
+    case D_PTP:
+        s->cache_size = s->window_duration;
+        break;
+    }
+
     s->start_window = ff_get_audio_buffer(outlink, s->window_duration);
     s->stop_window = ff_get_audio_buffer(outlink, s->window_duration);
-    s->start_cache = av_calloc(outlink->ch_layout.nb_channels, s->window_duration * sizeof(*s->start_cache));
-    s->stop_cache = av_calloc(outlink->ch_layout.nb_channels, s->window_duration * sizeof(*s->stop_cache));
+    s->start_cache = av_calloc(outlink->ch_layout.nb_channels, s->cache_size * sizeof(*s->start_cache));
+    s->stop_cache = av_calloc(outlink->ch_layout.nb_channels, s->cache_size * sizeof(*s->stop_cache));
     if (!s->start_window || !s->stop_window || !s->start_cache || !s->stop_cache)
         return AVERROR(ENOMEM);
 
@@ -249,6 +267,10 @@ static int config_output(AVFilterLink *outlink)
     case D_AVG:
         s->compute_flt = compute_avg_flt;
         s->compute_dbl = compute_avg_dbl;
+        break;
+    case D_DEV:
+        s->compute_flt = compute_dev_flt;
+        s->compute_dbl = compute_dev_dbl;
         break;
     case D_PTP:
         s->compute_flt = compute_ptp_flt;

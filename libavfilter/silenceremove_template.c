@@ -105,73 +105,76 @@ static void fn(queue_sample)(AVFilterContext *ctx,
         *window_pos = 0;
 }
 
-static ftype fn(compute_avg)(ftype *cache, ftype sample, ftype wsample,
+static ftype fn(compute_avg)(ftype *cache, ftype x, ftype px,
                              int window_size, int *unused, int *unused2)
 {
     ftype r;
 
-    cache[0] += FABS(sample);
-    cache[0] -= FABS(wsample);
+    cache[0] += FABS(x);
+    cache[0] -= FABS(px);
     cache[0] = r = FMAX(cache[0], ZERO);
 
     return r / window_size;
 }
 
-static ftype fn(compute_median)(ftype *peak, ftype sample, ftype wsample,
-                                int size, int *ffront, int *bback)
+#define PEAKS(empty_value,op,sample, psample)\
+    if (!empty && psample == ss[front]) {    \
+        ss[front] = empty_value;             \
+        if (back != front) {                 \
+            front--;                         \
+            if (front < 0)                   \
+                front = n - 1;               \
+        }                                    \
+        empty = front == back;               \
+    }                                        \
+                                             \
+    if (!empty && sample op ss[front]) {     \
+        while (1) {                          \
+            ss[front] = empty_value;         \
+            if (back == front) {             \
+                empty = 1;                   \
+                break;                       \
+            }                                \
+            front--;                         \
+            if (front < 0)                   \
+                front = n - 1;               \
+        }                                    \
+    }                                        \
+                                             \
+    while (!empty && sample op ss[back]) {   \
+        ss[back] = empty_value;              \
+        if (back == front) {                 \
+            empty = 1;                       \
+            break;                           \
+        }                                    \
+        back++;                              \
+        if (back >= n)                       \
+            back = 0;                        \
+    }                                        \
+                                             \
+    if (!empty) {                            \
+        back--;                              \
+        if (back < 0)                        \
+            back = n - 1;                    \
+    }
+
+static ftype fn(compute_median)(ftype *ss, ftype x, ftype px,
+                                int n, int *ffront, int *bback)
 {
-    ftype r, abs_sample = FABS(sample);
+    ftype r, ax = FABS(x);
     int front = *ffront;
     int back = *bback;
-    int empty = front == back && peak[front] == -ONE;
+    int empty = front == back && ss[front] == -ONE;
     int idx;
 
-    if (!empty && FABS(wsample) == peak[front]) {
-        peak[front] = -ONE;
-        if (back != front) {
-            front--;
-            if (front < 0)
-                front = size - 1;
-        }
-        empty = front == back;
-    }
+    PEAKS(-ONE, >, ax, FABS(px))
 
-    if (!empty && abs_sample > peak[front]) {
-        while (1) {
-            peak[front] = -ONE;
-            if (back == front) {
-                empty = 1;
-                break;
-            }
-            front--;
-            if (front < 0)
-                front = size - 1;
-        }
-    }
-
-    while (!empty && abs_sample > peak[back]) {
-        peak[back] = -ONE;
-        if (back == front) {
-            empty = 1;
-            break;
-        }
-        back++;
-        if (back >= size)
-            back = 0;
-    }
-
-    if (!empty) {
-        back--;
-        if (back < 0)
-            back = size - 1;
-    }
-
-    peak[back] = abs_sample;
-    idx = (back <= front) ? back + (front - back + 1) / 2 : back + (size + front - back + 1) / 2;
-    if (idx >= size)
-        idx -= size;
-    av_assert2(idx >= 0 && idx < size);
-    r = peak[idx];
+    ss[back] = ax;
+    idx = (back <= front) ? back + (front - back + 1) / 2 : back + (n + front - back + 1) / 2;
+    if (idx >= n)
+        idx -= n;
+    av_assert2(idx >= 0 && idx < n);
+    r = ss[idx];
 
     *ffront = front;
     *bback = back;
@@ -179,56 +182,18 @@ static ftype fn(compute_median)(ftype *peak, ftype sample, ftype wsample,
     return r;
 }
 
-static ftype fn(compute_peak)(ftype *peak, ftype sample, ftype wsample,
-                              int size, int *ffront, int *bback)
+static ftype fn(compute_peak)(ftype *ss, ftype x, ftype px,
+                              int n, int *ffront, int *bback)
 {
-    ftype r, abs_sample = FABS(sample);
+    ftype r, ax = FABS(x);
     int front = *ffront;
     int back = *bback;
-    int empty = front == back && peak[front] == ZERO;
+    int empty = front == back && ss[front] == ZERO;
 
-    if (!empty && FABS(wsample) == peak[front]) {
-        peak[front] = ZERO;
-        if (back != front) {
-            front--;
-            if (front < 0)
-                front = size - 1;
-        }
-        empty = front == back;
-    }
+    PEAKS(ZERO, >=, ax, FABS(px))
 
-    if (!empty && abs_sample >= peak[front]) {
-        while (1) {
-            peak[front] = ZERO;
-            if (back == front) {
-                empty = 1;
-                break;
-            }
-            front--;
-            if (front < 0)
-                front = size - 1;
-        }
-    }
-
-    while (!empty && abs_sample >= peak[back]) {
-        peak[back] = ZERO;
-        if (back == front) {
-            empty = 1;
-            break;
-        }
-        back++;
-        if (back >= size)
-            back = 0;
-    }
-
-    if (!empty) {
-        back--;
-        if (back < 0)
-            back = size - 1;
-    }
-
-    peak[back] = abs_sample;
-    r = peak[front];
+    ss[back] = ax;
+    r = ss[front];
 
     *ffront = front;
     *bback = back;
@@ -236,58 +201,20 @@ static ftype fn(compute_peak)(ftype *peak, ftype sample, ftype wsample,
     return r;
 }
 
-static ftype fn(compute_ptp)(ftype *peak, ftype sample, ftype wsample,
-                             int size, int *ffront, int *bback)
+static ftype fn(compute_ptp)(ftype *ss, ftype x, ftype px,
+                             int n, int *ffront, int *bback)
 {
     int front = *ffront;
     int back = *bback;
-    int empty = front == back && peak[front] == TMIN;
+    int empty = front == back && ss[front] == TMIN;
     ftype r, max, min;
 
-    if (!empty && wsample == peak[front]) {
-        peak[front] = TMIN;
-        if (back != front) {
-            front--;
-            if (front < 0)
-                front = size - 1;
-        }
-        empty = front == back;
-    }
+    PEAKS(TMIN, >=, x, px)
 
-    if (!empty && sample >= peak[front]) {
-        while (1) {
-            peak[front] = TMIN;
-            if (back == front) {
-                empty = 1;
-                break;
-            }
-            front--;
-            if (front < 0)
-                front = size - 1;
-        }
-    }
-
-    while (!empty && sample >= peak[back]) {
-        peak[back] = TMIN;
-        if (back == front) {
-            empty = 1;
-            break;
-        }
-        back++;
-        if (back >= size)
-            back = 0;
-    }
-
-    if (!empty) {
-        back--;
-        if (back < 0)
-            back = size - 1;
-    }
-
-    peak[back] = sample;
-    max = peak[front];
-    min = (back == front) ? -sample : sample;
-    r = FABS(max - min);
+    ss[back] = x;
+    max = ss[front];
+    min = x;
+    r = FABS(min) + FABS(max - min);
 
     *ffront = front;
     *bback = back;
@@ -295,16 +222,33 @@ static ftype fn(compute_ptp)(ftype *peak, ftype sample, ftype wsample,
     return r;
 }
 
-static ftype fn(compute_rms)(ftype *cache, ftype sample, ftype wsample,
+static ftype fn(compute_rms)(ftype *cache, ftype x, ftype px,
                              int window_size, int *unused, int *unused2)
 {
     ftype r;
 
-    cache[0] += sample * sample;
-    cache[0] -= wsample * wsample;
+    cache[0] += x * x;
+    cache[0] -= px * px;
     cache[0] = r = FMAX(cache[0], ZERO);
 
     return SQRT(r / window_size);
+}
+
+static ftype fn(compute_dev)(ftype *ss, ftype x, ftype px,
+                             int n, int *unused, int *unused2)
+{
+    ftype r;
+
+    ss[0] += x;
+    ss[0] -= px;
+
+    ss[1] += x * x;
+    ss[1] -= px * px;
+    ss[1] = FMAX(ss[1], ZERO);
+
+    r = FMAX(ss[1] - ss[0] * ss[0] / n, ZERO) / n;
+
+    return SQRT(r);
 }
 
 static void fn(filter_start)(AVFilterContext *ctx,
@@ -328,6 +272,7 @@ static void fn(filter_start)(AVFilterContext *ctx,
     ftype *start_cache = (ftype *)s->start_cache;
     const int start_silence = s->start_silence;
     int window_size = start_window_nb_samples;
+    const int cache_size = s->cache_size;
     int *front = s->start_front;
     int *back = s->start_back;
 
@@ -352,7 +297,7 @@ static void fn(filter_start)(AVFilterContext *ctx,
         ftype start_ow = startw[start_wpos + ch];
         ftype tstart;
 
-        tstart = fn(s->compute)(start_cache + ch * start_window_nb_samples,
+        tstart = fn(s->compute)(start_cache + ch * cache_size,
                                 start_sample,
                                 start_ow,
                                 window_size,
@@ -423,8 +368,9 @@ static void fn(filter_stop)(AVFilterContext *ctx,
     const int stop_duration = s->stop_duration;
     ftype *stop_cache = (ftype *)s->stop_cache;
     const int stop_silence = s->stop_silence;
-    const int restart = s->restart;
     int window_size = stop_window_nb_samples;
+    const int cache_size = s->cache_size;
+    const int restart = s->restart;
     int *front = s->stop_front;
     int *back = s->stop_back;
 
@@ -446,7 +392,7 @@ static void fn(filter_stop)(AVFilterContext *ctx,
         ftype stop_ow = stopw[stop_wpos + ch];
         ftype tstop;
 
-        tstop = fn(s->compute)(stop_cache + ch * stop_window_nb_samples,
+        tstop = fn(s->compute)(stop_cache + ch * cache_size,
                                stop_sample,
                                stop_ow,
                                window_size,
