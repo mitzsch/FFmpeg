@@ -441,7 +441,10 @@ static QSVFrame *submit_frame(QSVVPPContext *s, AVFilterLink *inlink, AVFrame *p
                 return NULL;
             }
 
-            av_frame_copy_props(qsv_frame->frame, picref);
+            if (av_frame_copy_props(qsv_frame->frame, picref) < 0) {
+                av_frame_free(&qsv_frame->frame);
+                return NULL;
+            }
         } else
             qsv_frame->frame = av_frame_clone(picref);
 
@@ -457,8 +460,8 @@ static QSVFrame *submit_frame(QSVVPPContext *s, AVFilterLink *inlink, AVFrame *p
                                                       inlink->time_base, default_tb);
 
     qsv_frame->surface.Info.PicStruct =
-            !qsv_frame->frame->interlaced_frame ? MFX_PICSTRUCT_PROGRESSIVE :
-            (qsv_frame->frame->top_field_first ? MFX_PICSTRUCT_FIELD_TFF :
+            !(qsv_frame->frame->flags & AV_FRAME_FLAG_INTERLACED) ? MFX_PICSTRUCT_PROGRESSIVE :
+            ((qsv_frame->frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? MFX_PICSTRUCT_FIELD_TFF :
                                                  MFX_PICSTRUCT_FIELD_BFF);
     if (qsv_frame->frame->repeat_pict == 1)
         qsv_frame->surface.Info.PicStruct |= MFX_PICSTRUCT_FIELD_REPEATED;

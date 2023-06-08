@@ -2,6 +2,22 @@ Entries are sorted chronologically from oldest to youngest within each release,
 releases are sorted from youngest to oldest.
 
 version <next>:
+- libaribcaption decoder
+- Playdate video decoder and demuxer
+- Extend VAAPI support for libva-win32 on Windows
+- afireqsrc audio source filter
+- arls filter
+- ffmpeg CLI new option: -readrate_initial_burst
+- zoneplate video source filter
+- command support in the setpts and asetpts filters
+- Vulkan decode hwaccel, supporting H264, HEVC and AV1
+- color_vulkan filter
+- bwdif_vulkan filter
+- nlmeans_vulkan filter
+- RivaTuner video decoder
+- xfade_vulkan filter
+
+version 6.0:
 - Radiance HDR image support
 - ddagrab (Desktop Duplication) video capture filter
 - ffmpeg -shortest_buf_duration option
@@ -44,6 +60,7 @@ version <next>:
 - RKA decoder and demuxer
 - filtergraph syntax in ffmpeg CLI now supports passing file contents
   as option values, by prefixing option name with '/'
+- hstack_qsv, vstack_qsv and xstack_qsv filters
 
 
 version 5.1:
