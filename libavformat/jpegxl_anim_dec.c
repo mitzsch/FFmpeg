@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "libavcodec/bytestream.h"
 #define BITSTREAM_READER_LE
 #include "libavcodec/get_bits.h"
 
@@ -48,67 +49,70 @@ typedef struct JXLAnimDemuxContext {
  * returns the number of bytes consumed from input, may be greater than input_len
  * if the input doesn't end on an ISOBMFF-box boundary
  */
-static int jpegxl_collect_codestream_header(const uint8_t *input_buffer, int input_len, uint8_t *buffer, int buflen, int *copied) {
-    const uint8_t *b = input_buffer;
+static int jpegxl_collect_codestream_header(const uint8_t *input_buffer, int input_len,
+                                            uint8_t *buffer, int buflen, int *copied) {
+    GetByteContext gb;
     *copied = 0;
+    bytestream2_init(&gb, input_buffer, input_len);
 
     while (1) {
         uint64_t size;
         uint32_t tag;
         int head_size = 8;
 
-        if (b - input_buffer >= input_len - 16)
+        if (bytestream2_get_bytes_left(&gb) < 16)
             break;
 
-        size = AV_RB32(b);
-        b += 4;
+        size = bytestream2_get_be32(&gb);
         if (size == 1) {
-            size = AV_RB64(b);
-            b += 8;
+            size = bytestream2_get_be64(&gb);
             head_size = 16;
         }
         /* invalid ISOBMFF size */
-        if (size > 0 && size <= head_size)
+        if (size && size <= head_size)
             return AVERROR_INVALIDDATA;
-        if (size > 0)
+        if (size)
             size -= head_size;
 
-        tag = AV_RL32(b);
-        b += 4;
+        tag = bytestream2_get_le32(&gb);
         if (tag == MKTAG('j', 'x', 'l', 'p')) {
-            b += 4;
-            size -= 4;
+            if (bytestream2_get_bytes_left(&gb) < 4)
+                break;
+            bytestream2_skip(&gb, 4);
+            if (size) {
+                if (size <= 4)
+                    return AVERROR_INVALIDDATA;
+                size -= 4;
+            }
         }
+        /*
+         * size = 0 means "until EOF". this is legal but uncommon
+         * here we just set it to the remaining size of the probe buffer
+         */
+        if (!size)
+            size = bytestream2_get_bytes_left(&gb);
 
         if (tag == MKTAG('j', 'x', 'l', 'c') || tag == MKTAG('j', 'x', 'l', 'p')) {
-            /*
-             * size = 0 means "until EOF". this is legal but uncommon
-             * here we just set it to the remaining size of the probe buffer
-             * which at this point should always be nonnegative
-             */
-            if (size == 0 || size > input_len - (b - input_buffer))
-                size = input_len - (b - input_buffer);
-
             if (size > buflen - *copied)
                 size = buflen - *copied;
             /*
              * arbitrary chunking of the payload makes this memcpy hard to avoid
              * in practice this will only be performed one or two times at most
              */
-            memcpy(buffer + *copied, b, size);
-            *copied += size;
+            *copied += bytestream2_get_buffer(&gb, buffer + *copied, size);
+        } else {
+            bytestream2_skip(&gb, size);
         }
-        b += size;
-        if (b >= input_buffer + input_len || *copied >= buflen)
+        if (bytestream2_get_bytes_left(&gb) <= 0 || *copied >= buflen)
             break;
     }
 
-    return b - input_buffer;
+    return bytestream2_tell(&gb);
 }
 
 static int jpegxl_anim_probe(const AVProbeData *p)
 {
-    uint8_t buffer[4096];
+    uint8_t buffer[4096 + AV_INPUT_BUFFER_PADDING_SIZE];
     int copied;
 
     /* this is a raw codestream */
@@ -123,7 +127,7 @@ static int jpegxl_anim_probe(const AVProbeData *p)
     if (AV_RL64(p->buf) != FF_JPEGXL_CONTAINER_SIGNATURE_LE)
         return 0;
 
-    if (jpegxl_collect_codestream_header(p->buf, p->buf_size, buffer, sizeof(buffer), &copied) <= 0 || copied <= 0)
+    if (jpegxl_collect_codestream_header(p->buf, p->buf_size, buffer, sizeof(buffer) - AV_INPUT_BUFFER_PADDING_SIZE, &copied) <= 0 || copied <= 0)
         return 0;
 
     if (ff_jpegxl_verify_codestream_header(buffer, copied, 0) >= 1)
@@ -138,7 +142,8 @@ static int jpegxl_anim_read_header(AVFormatContext *s)
     AVIOContext *pb = s->pb;
     AVStream *st;
     int offset = 0;
-    uint8_t head[256];
+    uint8_t head[256 + AV_INPUT_BUFFER_PADDING_SIZE];
+    const int sizeofhead = sizeof(head) - AV_INPUT_BUFFER_PADDING_SIZE;
     int headsize = 0;
     int ctrl;
     AVRational tb;
@@ -147,7 +152,7 @@ static int jpegxl_anim_read_header(AVFormatContext *s)
     uint64_t sig16 = avio_rl16(pb);
     if (sig16 == FF_JPEGXL_CODESTREAM_SIGNATURE_LE) {
         AV_WL16(head, sig16);
-        headsize = avio_read(s->pb, head + 2, sizeof(head) - 2);
+        headsize = avio_read(s->pb, head + 2, sizeofhead - 2);
         if (headsize < 0)
             return headsize;
         headsize += 2;
@@ -178,10 +183,10 @@ static int jpegxl_anim_read_header(AVFormatContext *s)
                 if (av_buffer_realloc(&ctx->initial, ctx->initial->size + read) < 0)
                     return AVERROR(ENOMEM);
             }
-            jpegxl_collect_codestream_header(buf, read, head + headsize, sizeof(head) - headsize, &copied);
+            jpegxl_collect_codestream_header(buf, read, head + headsize, sizeofhead - headsize, &copied);
             memcpy(ctx->initial->data + (ctx->initial->size - read), buf, read);
             headsize += copied;
-            if (headsize >= sizeof(head) || read < sizeof(buf))
+            if (headsize >= sizeofhead || read < sizeof(buf))
                 break;
         }
     }
@@ -227,7 +232,7 @@ static int jpegxl_anim_read_packet(AVFormatContext *s, AVPacket *pkt)
     if (ctx->initial && size < ctx->initial->size)
         size = ctx->initial->size;
 
-    if ((ret = av_new_packet(pkt, size) < 0))
+    if ((ret = av_new_packet(pkt, size)) < 0)
         return ret;
 
     if (ctx->initial) {

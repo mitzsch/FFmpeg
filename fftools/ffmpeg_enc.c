@@ -66,10 +66,10 @@ struct Encoder {
     // number of packets received from the encoder
     uint64_t packets_encoded;
 
+    uint64_t dup_warning;
+
     int opened;
 };
-
-static uint64_t dup_warning = 1000;
 
 void enc_free(Encoder **penc)
 {
@@ -105,6 +105,8 @@ int enc_alloc(Encoder **penc, const AVCodec *codec)
     enc->pkt = av_packet_alloc();
     if (!enc->pkt)
         goto fail;
+
+    enc->dup_warning = 1000;
 
     *penc = enc;
 
@@ -196,6 +198,7 @@ int enc_open(OutputStream *ost, AVFrame *frame)
     AVCodecContext *dec_ctx = NULL;
     const AVCodec      *enc = enc_ctx->codec;
     OutputFile      *of = output_files[ost->file_index];
+    FrameData *fd = frame ? frame_data(frame) : NULL;
     int ret;
 
     if (e->opened)
@@ -217,8 +220,8 @@ int enc_open(OutputStream *ost, AVFrame *frame)
 
         if (ost->bits_per_raw_sample)
             enc_ctx->bits_per_raw_sample = ost->bits_per_raw_sample;
-        else if (dec_ctx && ost->filter->graph->is_meta)
-            enc_ctx->bits_per_raw_sample = FFMIN(dec_ctx->bits_per_raw_sample,
+        else if (fd)
+            enc_ctx->bits_per_raw_sample = FFMIN(fd->bits_per_raw_sample,
                                                  av_get_bytes_per_sample(enc_ctx->sample_fmt) << 3);
 
         enc_ctx->time_base = ost->enc_timebase.num > 0 ? ost->enc_timebase :
@@ -228,10 +231,8 @@ int enc_open(OutputStream *ost, AVFrame *frame)
     case AVMEDIA_TYPE_VIDEO: {
         AVRational fr = ost->frame_rate;
 
-        if (!fr.num && frame) {
-            FrameData *fd = frame_data(frame);
+        if (!fr.num && fd)
             fr = fd->frame_rate_filter;
-        }
         if (!fr.num && !ost->max_frame_rate.num) {
             fr = (AVRational){25, 1};
             av_log(ost, AV_LOG_WARNING,
@@ -280,8 +281,8 @@ int enc_open(OutputStream *ost, AVFrame *frame)
 
         if (ost->bits_per_raw_sample)
             enc_ctx->bits_per_raw_sample = ost->bits_per_raw_sample;
-        else if (dec_ctx && ost->filter->graph->is_meta)
-            enc_ctx->bits_per_raw_sample = FFMIN(dec_ctx->bits_per_raw_sample,
+        else if (fd)
+            enc_ctx->bits_per_raw_sample = FFMIN(fd->bits_per_raw_sample,
                                                  av_pix_fmt_desc_get(enc_ctx->pix_fmt)->comp[0].depth);
 
         if (frame) {
@@ -461,7 +462,7 @@ static int check_recording_time(OutputStream *ost, int64_t ts, AVRational tb)
     return 1;
 }
 
-void enc_subtitle(OutputFile *of, OutputStream *ost, AVSubtitle *sub)
+void enc_subtitle(OutputFile *of, OutputStream *ost, const AVSubtitle *sub)
 {
     Encoder *e = ost->enc;
     int subtitle_out_max_size = 1024 * 1024;
@@ -1070,9 +1071,9 @@ static void do_video_out(OutputFile *of, OutputStream *ost, AVFrame *frame)
         }
         ost->nb_frames_dup += nb_frames - (nb_frames_prev && ost->last_dropped) - (nb_frames > nb_frames_prev);
         av_log(ost, AV_LOG_VERBOSE, "*** %"PRId64" dup!\n", nb_frames - 1);
-        if (ost->nb_frames_dup > dup_warning) {
-            av_log(ost, AV_LOG_WARNING, "More than %"PRIu64" frames duplicated\n", dup_warning);
-            dup_warning *= 10;
+        if (ost->nb_frames_dup > e->dup_warning) {
+            av_log(ost, AV_LOG_WARNING, "More than %"PRIu64" frames duplicated\n", e->dup_warning);
+            e->dup_warning *= 10;
         }
     }
     ost->last_dropped = nb_frames == nb_frames_prev && frame;
