@@ -48,6 +48,7 @@ typedef struct FilterGraphPriv {
     // true when the filtergraph contains only meta filters
     // that do not modify the frame data
     int is_meta;
+    int disable_conversions;
 
     const char *graph_desc;
 
@@ -131,6 +132,35 @@ typedef struct InputFilterPriv {
 static InputFilterPriv *ifp_from_ifilter(InputFilter *ifilter)
 {
     return (InputFilterPriv*)ifilter;
+}
+
+typedef struct OutputFilterPriv {
+    OutputFilter        ofilter;
+
+    AVFilterContext    *filter;
+
+    /* desired output stream properties */
+    int format;
+    int width, height;
+    int sample_rate;
+    AVChannelLayout ch_layout;
+
+    AVRational time_base;
+    AVRational sample_aspect_ratio;
+
+    // those are only set if no format is specified and the encoder gives us multiple options
+    // They point directly to the relevant lists of the encoder.
+    const int *formats;
+    const AVChannelLayout *ch_layouts;
+    const int *sample_rates;
+
+    // set to 1 after at least one frame passed through this output
+    int got_frame;
+} OutputFilterPriv;
+
+static OutputFilterPriv *ofp_from_ofilter(OutputFilter *ofilter)
+{
+    return (OutputFilterPriv*)ofilter;
 }
 
 static int configure_filtergraph(FilterGraph *fg);
@@ -300,8 +330,6 @@ static const char *choose_pix_fmts(OutputFilter *ofilter, AVBPrint *bprint)
         av_opt_set(ost->enc_ctx, "strict", strict_dict->value, 0);
 
      if (ost->keep_pix_fmt) {
-        avfilter_graph_set_auto_convert(ofilter->graph->graph,
-                                            AVFILTER_AUTO_CONVERT_NONE);
         if (ost->enc_ctx->pix_fmt == AV_PIX_FMT_NONE)
             return NULL;
         return av_get_pix_fmt_name(ost->enc_ctx->pix_fmt);
@@ -331,17 +359,17 @@ static const char *choose_pix_fmts(OutputFilter *ofilter, AVBPrint *bprint)
 /* Define a function for appending a list of allowed formats
  * to an AVBPrint. If nonempty, the list will have a header. */
 #define DEF_CHOOSE_FORMAT(name, type, var, supported_list, none, printf_format, get_name) \
-static void choose_ ## name (OutputFilter *ofilter, AVBPrint *bprint)          \
+static void choose_ ## name (OutputFilterPriv *ofp, AVBPrint *bprint)          \
 {                                                                              \
-    if (ofilter->var == none && !ofilter->supported_list)                      \
+    if (ofp->var == none && !ofp->supported_list)                              \
         return;                                                                \
     av_bprintf(bprint, #name "=");                                             \
-    if (ofilter->var != none) {                                                \
-        av_bprintf(bprint, printf_format, get_name(ofilter->var));             \
+    if (ofp->var != none) {                                                    \
+        av_bprintf(bprint, printf_format, get_name(ofp->var));                 \
     } else {                                                                   \
         const type *p;                                                         \
                                                                                \
-        for (p = ofilter->supported_list; *p != none; p++) {                   \
+        for (p = ofp->supported_list; *p != none; p++) {                       \
             av_bprintf(bprint, printf_format "|", get_name(*p));               \
         }                                                                      \
         if (bprint->len > 0)                                                   \
@@ -359,16 +387,16 @@ DEF_CHOOSE_FORMAT(sample_fmts, enum AVSampleFormat, format, formats,
 DEF_CHOOSE_FORMAT(sample_rates, int, sample_rate, sample_rates, 0,
                   "%d", )
 
-static void choose_channel_layouts(OutputFilter *ofilter, AVBPrint *bprint)
+static void choose_channel_layouts(OutputFilterPriv *ofp, AVBPrint *bprint)
 {
-    if (av_channel_layout_check(&ofilter->ch_layout)) {
+    if (av_channel_layout_check(&ofp->ch_layout)) {
         av_bprintf(bprint, "channel_layouts=");
-        av_channel_layout_describe_bprint(&ofilter->ch_layout, bprint);
-    } else if (ofilter->ch_layouts) {
+        av_channel_layout_describe_bprint(&ofp->ch_layout, bprint);
+    } else if (ofp->ch_layouts) {
         const AVChannelLayout *p;
 
         av_bprintf(bprint, "channel_layouts=");
-        for (p = ofilter->ch_layouts; p->nb_channels; p++) {
+        for (p = ofp->ch_layouts; p->nb_channels; p++) {
             av_channel_layout_describe_bprint(p, bprint);
             av_bprintf(bprint, "|");
         }
@@ -580,11 +608,14 @@ static char *describe_filter_link(FilterGraph *fg, AVFilterInOut *inout, int in)
 
 static OutputFilter *ofilter_alloc(FilterGraph *fg)
 {
+    OutputFilterPriv *ofp;
     OutputFilter *ofilter;
 
-    ofilter           = ALLOC_ARRAY_ELEM(fg->outputs, fg->nb_outputs);
+    ofp               = allocate_array_elem(&fg->outputs, sizeof(*ofp),
+                                            &fg->nb_outputs);
+    ofilter           = &ofp->ofilter;
     ofilter->graph    = fg;
-    ofilter->format   = -1;
+    ofp->format       = -1;
     ofilter->last_pts = AV_NOPTS_VALUE;
 
     return ofilter;
@@ -594,6 +625,8 @@ static int ifilter_bind_ist(InputFilter *ifilter, InputStream *ist)
 {
     InputFilterPriv *ifp = ifp_from_ifilter(ifilter);
     int ret;
+
+    av_assert0(!ifp->ist);
 
     ifp->ist             = ist;
     ifp->type_src        = ist->st->codecpar->codec_type;
@@ -611,7 +644,7 @@ static int ifilter_bind_ist(InputFilter *ifilter, InputStream *ist)
     return 0;
 }
 
-static void set_channel_layout(OutputFilter *f, OutputStream *ost)
+static void set_channel_layout(OutputFilterPriv *f, OutputStream *ost)
 {
     const AVCodec *c = ost->enc_ctx->codec;
     int i, err;
@@ -651,37 +684,44 @@ static void set_channel_layout(OutputFilter *f, OutputStream *ost)
 
 void ofilter_bind_ost(OutputFilter *ofilter, OutputStream *ost)
 {
+    OutputFilterPriv *ofp = ofp_from_ofilter(ofilter);
     FilterGraph  *fg = ofilter->graph;
+    FilterGraphPriv *fgp = fgp_from_fg(fg);
     const AVCodec *c = ost->enc_ctx->codec;
+
+    av_assert0(!ofilter->ost);
 
     ofilter->ost = ost;
     av_freep(&ofilter->linklabel);
 
     switch (ost->enc_ctx->codec_type) {
     case AVMEDIA_TYPE_VIDEO:
-        ofilter->width      = ost->enc_ctx->width;
-        ofilter->height     = ost->enc_ctx->height;
+        ofp->width      = ost->enc_ctx->width;
+        ofp->height     = ost->enc_ctx->height;
         if (ost->enc_ctx->pix_fmt != AV_PIX_FMT_NONE) {
-            ofilter->format = ost->enc_ctx->pix_fmt;
+            ofp->format = ost->enc_ctx->pix_fmt;
         } else {
-            ofilter->formats = c->pix_fmts;
+            ofp->formats = c->pix_fmts;
         }
+
+        fgp->disable_conversions |= ost->keep_pix_fmt;
+
         break;
     case AVMEDIA_TYPE_AUDIO:
         if (ost->enc_ctx->sample_fmt != AV_SAMPLE_FMT_NONE) {
-            ofilter->format = ost->enc_ctx->sample_fmt;
+            ofp->format = ost->enc_ctx->sample_fmt;
         } else {
-            ofilter->formats = c->sample_fmts;
+            ofp->formats = c->sample_fmts;
         }
         if (ost->enc_ctx->sample_rate) {
-            ofilter->sample_rate = ost->enc_ctx->sample_rate;
+            ofp->sample_rate = ost->enc_ctx->sample_rate;
         } else {
-            ofilter->sample_rates = c->supported_samplerates;
+            ofp->sample_rates = c->supported_samplerates;
         }
         if (ost->enc_ctx->ch_layout.nb_channels) {
-            set_channel_layout(ofilter, ost);
+            set_channel_layout(ofp, ost);
         } else if (c->ch_layouts) {
-            ofilter->ch_layouts = c->ch_layouts;
+            ofp->ch_layouts = c->ch_layouts;
         }
         break;
     }
@@ -760,10 +800,11 @@ void fg_free(FilterGraph **pfg)
     av_freep(&fg->inputs);
     for (int j = 0; j < fg->nb_outputs; j++) {
         OutputFilter *ofilter = fg->outputs[j];
+        OutputFilterPriv *ofp = ofp_from_ofilter(ofilter);
 
         av_freep(&ofilter->linklabel);
         av_freep(&ofilter->name);
-        av_channel_layout_uninit(&ofilter->ch_layout);
+        av_channel_layout_uninit(&ofp->ch_layout);
         av_freep(&fg->outputs[j]);
     }
     av_freep(&fg->outputs);
@@ -800,6 +841,7 @@ FilterGraph *fg_create(char *graph_desc)
     fg->class       = &fg_class;
     fg->index      = nb_filtergraphs - 1;
     fgp->graph_desc = graph_desc;
+    fgp->disable_conversions = !auto_conversion_filters;
 
     snprintf(fgp->log_name, sizeof(fgp->log_name), "fc#%d", fg->index);
 
@@ -1043,6 +1085,7 @@ static int insert_filter(AVFilterContext **last_filter, int *pad_idx,
 
 static int configure_output_video_filter(FilterGraph *fg, OutputFilter *ofilter, AVFilterInOut *out)
 {
+    OutputFilterPriv *ofp = ofp_from_ofilter(ofilter);
     OutputStream *ost = ofilter->ost;
     OutputFile    *of = output_files[ost->file_index];
     AVFilterContext *last_filter = out->filter_ctx;
@@ -1053,20 +1096,20 @@ static int configure_output_video_filter(FilterGraph *fg, OutputFilter *ofilter,
     char name[255];
 
     snprintf(name, sizeof(name), "out_%d_%d", ost->file_index, ost->index);
-    ret = avfilter_graph_create_filter(&ofilter->filter,
+    ret = avfilter_graph_create_filter(&ofp->filter,
                                        avfilter_get_by_name("buffersink"),
                                        name, NULL, NULL, fg->graph);
 
     if (ret < 0)
         return ret;
 
-    if ((ofilter->width || ofilter->height) && ofilter->ost->autoscale) {
+    if ((ofp->width || ofp->height) && ofilter->ost->autoscale) {
         char args[255];
         AVFilterContext *filter;
         const AVDictionaryEntry *e = NULL;
 
         snprintf(args, sizeof(args), "%d:%d",
-                 ofilter->width, ofilter->height);
+                 ofp->width, ofp->height);
 
         while ((e = av_dict_iterate(ost->sws_dict, e))) {
             av_strlcatf(args, sizeof(args), ":%s=%s", e->key, e->value);
@@ -1109,7 +1152,7 @@ static int configure_output_video_filter(FilterGraph *fg, OutputFilter *ofilter,
         return ret;
 
 
-    if ((ret = avfilter_link(last_filter, pad_idx, ofilter->filter, 0)) < 0)
+    if ((ret = avfilter_link(last_filter, pad_idx, ofp->filter, 0)) < 0)
         return ret;
 
     return 0;
@@ -1117,6 +1160,7 @@ static int configure_output_video_filter(FilterGraph *fg, OutputFilter *ofilter,
 
 static int configure_output_audio_filter(FilterGraph *fg, OutputFilter *ofilter, AVFilterInOut *out)
 {
+    OutputFilterPriv *ofp = ofp_from_ofilter(ofilter);
     OutputStream *ost = ofilter->ost;
     OutputFile    *of = output_files[ost->file_index];
     AVFilterContext *last_filter = out->filter_ctx;
@@ -1126,12 +1170,12 @@ static int configure_output_audio_filter(FilterGraph *fg, OutputFilter *ofilter,
     int ret;
 
     snprintf(name, sizeof(name), "out_%d_%d", ost->file_index, ost->index);
-    ret = avfilter_graph_create_filter(&ofilter->filter,
+    ret = avfilter_graph_create_filter(&ofp->filter,
                                        avfilter_get_by_name("abuffersink"),
                                        name, NULL, NULL, fg->graph);
     if (ret < 0)
         return ret;
-    if ((ret = av_opt_set_int(ofilter->filter, "all_channel_counts", 1, AV_OPT_SEARCH_CHILDREN)) < 0)
+    if ((ret = av_opt_set_int(ofp->filter, "all_channel_counts", 1, AV_OPT_SEARCH_CHILDREN)) < 0)
         return ret;
 
 #define AUTO_INSERT_FILTER(opt_name, filter_name, arg) do {                 \
@@ -1169,9 +1213,9 @@ static int configure_output_audio_filter(FilterGraph *fg, OutputFilter *ofilter,
     }
 #endif
 
-    choose_sample_fmts(ofilter,     &args);
-    choose_sample_rates(ofilter,    &args);
-    choose_channel_layouts(ofilter, &args);
+    choose_sample_fmts(ofp,     &args);
+    choose_sample_rates(ofp,    &args);
+    choose_channel_layouts(ofp, &args);
     if (!av_bprint_is_complete(&args)) {
         ret = AVERROR(ENOMEM);
         goto fail;
@@ -1214,7 +1258,7 @@ static int configure_output_audio_filter(FilterGraph *fg, OutputFilter *ofilter,
     if (ret < 0)
         goto fail;
 
-    if ((ret = avfilter_link(last_filter, pad_idx, ofilter->filter, 0)) < 0)
+    if ((ret = avfilter_link(last_filter, pad_idx, ofp->filter, 0)) < 0)
         goto fail;
 fail:
     av_bprint_finalize(&args, NULL);
@@ -1462,7 +1506,7 @@ static void cleanup_filtergraph(FilterGraph *fg)
 {
     int i;
     for (i = 0; i < fg->nb_outputs; i++)
-        fg->outputs[i]->filter = (AVFilterContext *)NULL;
+        ofp_from_ofilter(fg->outputs[i])->filter = NULL;
     for (i = 0; i < fg->nb_inputs; i++)
         ifp_from_ifilter(fg->inputs[i])->filter = NULL;
     avfilter_graph_free(&fg->graph);
@@ -1555,7 +1599,7 @@ static int configure_filtergraph(FilterGraph *fg)
         configure_output_filter(fg, fg->outputs[i], cur);
     avfilter_inout_free(&outputs);
 
-    if (!auto_conversion_filters)
+    if (fgp->disable_conversions)
         avfilter_graph_set_auto_convert(fg->graph, AVFILTER_AUTO_CONVERT_NONE);
     if ((ret = avfilter_graph_config(fg->graph, NULL)) < 0)
         goto fail;
@@ -1566,16 +1610,20 @@ static int configure_filtergraph(FilterGraph *fg)
      * make sure they stay the same if the filtergraph is reconfigured later */
     for (i = 0; i < fg->nb_outputs; i++) {
         OutputFilter *ofilter = fg->outputs[i];
-        AVFilterContext *sink = ofilter->filter;
+        OutputFilterPriv *ofp = ofp_from_ofilter(ofilter);
+        AVFilterContext *sink = ofp->filter;
 
-        ofilter->format = av_buffersink_get_format(sink);
+        ofp->format = av_buffersink_get_format(sink);
 
-        ofilter->width  = av_buffersink_get_w(sink);
-        ofilter->height = av_buffersink_get_h(sink);
+        ofp->width  = av_buffersink_get_w(sink);
+        ofp->height = av_buffersink_get_h(sink);
 
-        ofilter->sample_rate    = av_buffersink_get_sample_rate(sink);
-        av_channel_layout_uninit(&ofilter->ch_layout);
-        ret = av_buffersink_get_ch_layout(sink, &ofilter->ch_layout);
+        ofp->time_base           = av_buffersink_get_time_base(sink);
+        ofp->sample_aspect_ratio = av_buffersink_get_sample_aspect_ratio(sink);
+
+        ofp->sample_rate    = av_buffersink_get_sample_rate(sink);
+        av_channel_layout_uninit(&ofp->ch_layout);
+        ret = av_buffersink_get_ch_layout(sink, &ofp->ch_layout);
         if (ret < 0)
             goto fail;
     }
@@ -1685,6 +1733,7 @@ int reap_filters(int flush)
 {
     /* Reap all buffers present in the buffer sinks */
     for (OutputStream *ost = ost_iter(NULL); ost; ost = ost_iter(ost)) {
+        OutputFilterPriv *ofp;
         FilterGraphPriv *fgp;
         AVFrame *filtered_frame;
         AVFilterContext *filter;
@@ -1692,8 +1741,9 @@ int reap_filters(int flush)
 
         if (!ost->filter || !ost->filter->graph->graph)
             continue;
-        filter = ost->filter->filter;
         fgp    = fgp_from_fg(ost->filter->graph);
+        ofp    = ofp_from_ofilter(ost->filter);
+        filter = ofp->filter;
 
         filtered_frame = fgp->frame;
 
@@ -1706,10 +1756,10 @@ int reap_filters(int flush)
                 if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
                     av_log(fgp, AV_LOG_WARNING,
                            "Error in av_buffersink_get_frame_flags(): %s\n", av_err2str(ret));
-                } else if (flush && ret == AVERROR_EOF) {
-                    if (av_buffersink_get_type(filter) == AVMEDIA_TYPE_VIDEO)
-                        enc_frame(ost, NULL);
-                }
+                } else if (flush && ret == AVERROR_EOF && ofp->got_frame &&
+                           av_buffersink_get_type(filter) == AVMEDIA_TYPE_VIDEO)
+                    enc_frame(ost, NULL);
+
                 break;
             }
             if (ost->finished) {
@@ -1746,6 +1796,7 @@ int reap_filters(int flush)
 
             enc_frame(ost, filtered_frame);
             av_frame_unref(filtered_frame);
+            ofp->got_frame = 1;
         }
     }
 
@@ -1958,6 +2009,7 @@ int ifilter_send_frame(InputFilter *ifilter, AVFrame *frame, int keep_reference)
 
 int fg_transcode_step(FilterGraph *graph, InputStream **best_ist)
 {
+    FilterGraphPriv *fgp = fgp_from_fg(graph);
     int i, ret;
     int nb_requests, nb_requests_max = 0;
     InputStream *ist;
@@ -1985,10 +2037,43 @@ int fg_transcode_step(FilterGraph *graph, InputStream **best_ist)
         return reap_filters(0);
 
     if (ret == AVERROR_EOF) {
-        ret = reap_filters(1);
-        for (i = 0; i < graph->nb_outputs; i++)
-            close_output_stream(graph->outputs[i]->ost);
-        return ret;
+        reap_filters(1);
+        for (int i = 0; i < graph->nb_outputs; i++) {
+            OutputFilter *ofilter = graph->outputs[i];
+            OutputFilterPriv *ofp = ofp_from_ofilter(ofilter);
+
+            // we are finished and no frames were ever seen at this output,
+            // at least initialize the encoder with a dummy frame
+            if (!ofp->got_frame) {
+                AVFrame *frame = fgp->frame;
+
+                frame->time_base   = ofp->time_base;
+                frame->format      = ofp->format;
+
+                frame->width               = ofp->width;
+                frame->height              = ofp->height;
+                frame->sample_aspect_ratio = ofp->sample_aspect_ratio;
+
+                frame->sample_rate = ofp->sample_rate;
+                if (ofp->ch_layout.nb_channels) {
+                    ret = av_channel_layout_copy(&frame->ch_layout, &ofp->ch_layout);
+                    if (ret < 0)
+                        return ret;
+                }
+
+                av_assert0(!frame->buf[0]);
+
+                av_log(ofilter->ost, AV_LOG_WARNING,
+                       "No filtered frames for output stream, trying to "
+                       "initialize anyway.\n");
+
+                enc_open(ofilter->ost, frame);
+                av_frame_unref(frame);
+            }
+
+            close_output_stream(ofilter->ost);
+        }
+        return 0;
     }
     if (ret != AVERROR(EAGAIN))
         return ret;

@@ -56,6 +56,7 @@
 #define FFMPEG_ROTATION_METADATA 1
 #define FFMPEG_OPT_QPHIST 1
 #define FFMPEG_OPT_ADRIFT_THRESHOLD 1
+#define FFMPEG_OPT_ENC_TIME_BASE_NUM 1
 
 enum VideoSyncMethod {
     VSYNC_AUTO = -1,
@@ -64,6 +65,11 @@ enum VideoSyncMethod {
     VSYNC_VFR,
     VSYNC_VSCFR,
     VSYNC_DROP,
+};
+
+enum EncTimeBase {
+    ENC_TIME_BASE_DEMUX  = -1,
+    ENC_TIME_BASE_FILTER = -2,
 };
 
 #define MAX_STREAMS 1024    /* arbitrary sanity check value */
@@ -283,7 +289,6 @@ typedef struct InputFilter {
 } InputFilter;
 
 typedef struct OutputFilter {
-    AVFilterContext     *filter;
     struct OutputStream *ost;
     struct FilterGraph  *graph;
     uint8_t             *name;
@@ -293,18 +298,6 @@ typedef struct OutputFilter {
     uint8_t             *linklabel;
 
     enum AVMediaType     type;
-
-    /* desired output stream properties */
-    int width, height;
-    int format;
-    int sample_rate;
-    AVChannelLayout ch_layout;
-
-    // those are only set if no format is specified and the encoder gives us multiple options
-    // They point directly to the relevant lists of the encoder.
-    const int *formats;
-    const AVChannelLayout *ch_layouts;
-    const int *sample_rates;
 
     /* pts of the last frame received from this filter, in AV_TIME_BASE_Q */
     int64_t last_pts;
@@ -639,9 +632,13 @@ typedef struct OutputFile {
 
 // optionally attached as opaque_ref to decoded AVFrames
 typedef struct FrameData {
-    uint64_t   idx;
-    int64_t    pts;
-    AVRational tb;
+    // properties that come from the decoder
+    struct {
+        uint64_t   frame_num;
+
+        int64_t    pts;
+        AVRational tb;
+    } dec;
 
     AVRational frame_rate_filter;
 
@@ -712,7 +709,7 @@ void show_usage(void);
 void remove_avoptions(AVDictionary **a, AVDictionary *b);
 void assert_avoptions(AVDictionary *m);
 
-void assert_file_overwrite(const char *filename);
+int assert_file_overwrite(const char *filename);
 char *file_read(const char *filename);
 AVDictionary *strip_specifiers(const AVDictionary *dict);
 const AVCodec *find_codec_or_die(void *logctx, const char *name,
@@ -816,7 +813,7 @@ int enc_alloc(Encoder **penc, const AVCodec *codec);
 void enc_free(Encoder **penc);
 
 int enc_open(OutputStream *ost, AVFrame *frame);
-void enc_subtitle(OutputFile *of, OutputStream *ost, const AVSubtitle *sub);
+int enc_subtitle(OutputFile *of, OutputStream *ost, const AVSubtitle *sub);
 void enc_frame(OutputStream *ost, AVFrame *frame);
 void enc_flush(void);
 
@@ -838,7 +835,7 @@ void of_output_packet(OutputFile *of, OutputStream *ost, AVPacket *pkt);
 /**
  * @param dts predicted packet dts in AV_TIME_BASE_Q
  */
-void of_streamcopy(OutputStream *ost, const AVPacket *pkt, int64_t dts);
+int of_streamcopy(OutputStream *ost, const AVPacket *pkt, int64_t dts);
 
 int64_t of_filesize(OutputFile *of);
 

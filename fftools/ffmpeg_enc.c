@@ -34,8 +34,6 @@
 #include "libavutil/rational.h"
 #include "libavutil/timestamp.h"
 
-#include "libavfilter/buffersink.h"
-
 #include "libavcodec/avcodec.h"
 
 // FIXME private header, used for mid_pred()
@@ -198,11 +196,20 @@ int enc_open(OutputStream *ost, AVFrame *frame)
     AVCodecContext *dec_ctx = NULL;
     const AVCodec      *enc = enc_ctx->codec;
     OutputFile      *of = output_files[ost->file_index];
-    FrameData *fd = frame ? frame_data(frame) : NULL;
+    FrameData *fd;
     int ret;
 
     if (e->opened)
         return 0;
+
+    // frame is always non-NULL for audio and video
+    av_assert0(frame || (enc->type != AVMEDIA_TYPE_VIDEO && enc->type != AVMEDIA_TYPE_AUDIO));
+
+    if (frame) {
+        fd = frame_data(frame);
+        if (!fd)
+            return AVERROR(ENOMEM);
+    }
 
     set_encoder_id(output_files[ost->file_index], ost);
 
@@ -212,15 +219,15 @@ int enc_open(OutputStream *ost, AVFrame *frame)
 
     switch (enc_ctx->codec_type) {
     case AVMEDIA_TYPE_AUDIO:
-        enc_ctx->sample_fmt     = av_buffersink_get_format(ost->filter->filter);
-        enc_ctx->sample_rate    = av_buffersink_get_sample_rate(ost->filter->filter);
-        ret = av_buffersink_get_ch_layout(ost->filter->filter, &enc_ctx->ch_layout);
+        enc_ctx->sample_fmt     = frame->format;
+        enc_ctx->sample_rate    = frame->sample_rate;
+        ret = av_channel_layout_copy(&enc_ctx->ch_layout, &frame->ch_layout);
         if (ret < 0)
             return ret;
 
         if (ost->bits_per_raw_sample)
             enc_ctx->bits_per_raw_sample = ost->bits_per_raw_sample;
-        else if (fd)
+        else
             enc_ctx->bits_per_raw_sample = FFMIN(fd->bits_per_raw_sample,
                                                  av_get_bytes_per_sample(enc_ctx->sample_fmt) << 3);
 
@@ -231,7 +238,7 @@ int enc_open(OutputStream *ost, AVFrame *frame)
     case AVMEDIA_TYPE_VIDEO: {
         AVRational fr = ost->frame_rate;
 
-        if (!fr.num && fd)
+        if (!fr.num)
             fr = fd->frame_rate_filter;
         if (!fr.num && !ost->max_frame_rate.num) {
             fr = (AVRational){25, 1};
@@ -257,11 +264,23 @@ int enc_open(OutputStream *ost, AVFrame *frame)
                       fr.num, fr.den, 65535);
         }
 
-        enc_ctx->time_base = ost->enc_timebase.num > 0 ? ost->enc_timebase :
-                             av_inv_q(fr);
+        if (ost->enc_timebase.num == ENC_TIME_BASE_DEMUX) {
+            if (fd->dec.tb.num <= 0 || fd->dec.tb.den <= 0) {
+                av_log(ost, AV_LOG_ERROR,
+                       "Demuxing timebase not available - cannot use it for encoding\n");
+                return AVERROR(EINVAL);
+            }
+
+            enc_ctx->time_base = fd->dec.tb;
+        } else if (ost->enc_timebase.num == ENC_TIME_BASE_FILTER) {
+            enc_ctx->time_base = frame->time_base;
+        } else {
+            enc_ctx->time_base = ost->enc_timebase.num > 0 ? ost->enc_timebase :
+                                 av_inv_q(fr);
+        }
 
         if (!(enc_ctx->time_base.num && enc_ctx->time_base.den))
-            enc_ctx->time_base = av_buffersink_get_time_base(ost->filter->filter);
+            enc_ctx->time_base = frame->time_base;
         if (   av_q2d(enc_ctx->time_base) < 0.001 && ost->vsync_method != VSYNC_PASSTHROUGH
            && (ost->vsync_method == VSYNC_CFR || ost->vsync_method == VSYNC_VSCFR ||
                (ost->vsync_method == VSYNC_AUTO && !(of->format->flags & AVFMT_VARIABLE_FPS)))){
@@ -270,18 +289,18 @@ int enc_open(OutputStream *ost, AVFrame *frame)
                                         "setting vsync/fps_mode to vfr\n");
         }
 
-        enc_ctx->width  = av_buffersink_get_w(ost->filter->filter);
-        enc_ctx->height = av_buffersink_get_h(ost->filter->filter);
+        enc_ctx->width  = frame->width;
+        enc_ctx->height = frame->height;
         enc_ctx->sample_aspect_ratio = ost->st->sample_aspect_ratio =
             ost->frame_aspect_ratio.num ? // overridden by the -aspect cli option
             av_mul_q(ost->frame_aspect_ratio, (AVRational){ enc_ctx->height, enc_ctx->width }) :
-            av_buffersink_get_sample_aspect_ratio(ost->filter->filter);
+            frame->sample_aspect_ratio;
 
-        enc_ctx->pix_fmt = av_buffersink_get_format(ost->filter->filter);
+        enc_ctx->pix_fmt = frame->format;
 
         if (ost->bits_per_raw_sample)
             enc_ctx->bits_per_raw_sample = ost->bits_per_raw_sample;
-        else if (fd)
+        else
             enc_ctx->bits_per_raw_sample = FFMIN(fd->bits_per_raw_sample,
                                                  av_pix_fmt_desc_get(enc_ctx->pix_fmt)->comp[0].depth);
 
@@ -462,7 +481,7 @@ static int check_recording_time(OutputStream *ost, int64_t ts, AVRational tb)
     return 1;
 }
 
-void enc_subtitle(OutputFile *of, OutputStream *ost, const AVSubtitle *sub)
+int enc_subtitle(OutputFile *of, OutputStream *ost, const AVSubtitle *sub)
 {
     Encoder *e = ost->enc;
     int subtitle_out_max_size = 1024 * 1024;
@@ -473,13 +492,11 @@ void enc_subtitle(OutputFile *of, OutputStream *ost, const AVSubtitle *sub)
 
     if (sub->pts == AV_NOPTS_VALUE) {
         av_log(ost, AV_LOG_ERROR, "Subtitle packets must have a pts\n");
-        if (exit_on_error)
-            exit_program(1);
-        return;
+        return exit_on_error ? AVERROR(EINVAL) : 0;
     }
     if (ost->finished ||
         (of->start_time != AV_NOPTS_VALUE && sub->pts < of->start_time))
-        return;
+        return 0;
 
     enc = ost->enc_ctx;
 
@@ -501,11 +518,11 @@ void enc_subtitle(OutputFile *of, OutputStream *ost, const AVSubtitle *sub)
         AVSubtitle local_sub = *sub;
 
         if (!check_recording_time(ost, pts, AV_TIME_BASE_Q))
-            return;
+            return 0;
 
         ret = av_new_packet(pkt, subtitle_out_max_size);
         if (ret < 0)
-            report_and_exit(AVERROR(ENOMEM));
+            return AVERROR(ENOMEM);
 
         local_sub.pts = pts;
         // start_display_time is required to be 0
@@ -525,7 +542,7 @@ void enc_subtitle(OutputFile *of, OutputStream *ost, const AVSubtitle *sub)
         subtitle_out_size = avcodec_encode_subtitle(enc, pkt->data, pkt->size, &local_sub);
         if (subtitle_out_size < 0) {
             av_log(ost, AV_LOG_FATAL, "Subtitle encoding failed\n");
-            exit_program(1);
+            return subtitle_out_size;
         }
 
         av_shrink_packet(pkt, subtitle_out_size);
@@ -544,6 +561,8 @@ void enc_subtitle(OutputFile *of, OutputStream *ost, const AVSubtitle *sub)
 
         of_output_packet(of, ost, pkt);
     }
+
+    return 0;
 }
 
 void enc_stats_write(OutputStream *ost, EncStats *es,
@@ -562,8 +581,8 @@ void enc_stats_write(OutputStream *ost, EncStats *es,
 
     if ((frame && frame->opaque_ref) || (pkt && pkt->opaque_ref)) {
         fd   = (const FrameData*)(frame ? frame->opaque_ref->data : pkt->opaque_ref->data);
-        tbi  = fd->tb;
-        ptsi = fd->pts;
+        tbi  = fd->dec.tb;
+        ptsi = fd->dec.pts;
     }
 
     for (size_t i = 0; i < es->nb_components; i++) {
@@ -581,7 +600,7 @@ void enc_stats_write(OutputStream *ost, EncStats *es,
         case ENC_STATS_PTS_TIME_IN:     avio_printf(io, "%g",       ptsi == INT64_MAX ?
                                                                     INFINITY : ptsi * av_q2d(tbi)); continue;
         case ENC_STATS_FRAME_NUM:       avio_printf(io, "%"PRIu64,  frame_num);                     continue;
-        case ENC_STATS_FRAME_NUM_IN:    avio_printf(io, "%"PRIu64,  fd ? fd->idx : -1);             continue;
+        case ENC_STATS_FRAME_NUM_IN:    avio_printf(io, "%"PRIu64,  fd ? fd->dec.frame_num : -1);   continue;
         }
 
         if (frame) {
@@ -1142,26 +1161,8 @@ void enc_flush(void)
         AVCodecContext *enc = ost->enc_ctx;
         OutputFile      *of = output_files[ost->file_index];
 
-        if (!enc)
-            continue;
-
-        // Try to enable encoding with no input frames.
-        // Maybe we should just let encoding fail instead.
-        if (!e->opened) {
-            FilterGraph *fg = ost->filter->graph;
-
-            av_log(ost, AV_LOG_WARNING,
-                   "Finishing stream without any data written to it.\n");
-
-            if (!fg->graph)
-                continue;
-
-            ret = enc_open(ost, NULL);
-            if (ret < 0)
-                exit_program(1);
-        }
-
-        if (enc->codec_type != AVMEDIA_TYPE_VIDEO && enc->codec_type != AVMEDIA_TYPE_AUDIO)
+        if (!enc || !e->opened ||
+            (enc->codec_type != AVMEDIA_TYPE_VIDEO && enc->codec_type != AVMEDIA_TYPE_AUDIO))
             continue;
 
         ret = submit_encode_frame(of, ost, NULL);

@@ -439,7 +439,9 @@ static int process_subtitle(InputStream *ist, AVFrame *frame)
         if (!ost->enc || ost->type != AVMEDIA_TYPE_SUBTITLE)
             continue;
 
-        enc_subtitle(output_files[ost->file_index], ost, subtitle);
+        ret = enc_subtitle(output_files[ost->file_index], ost, subtitle);
+        if (ret < 0)
+            return ret;
     }
 
     return 0;
@@ -610,9 +612,9 @@ static int packet_decode(InputStream *ist, const AVPacket *pkt, AVFrame *frame)
             av_frame_unref(frame);
             return AVERROR(ENOMEM);
         }
-        fd->pts                     = frame->pts;
-        fd->tb                      = dec->pkt_timebase;
-        fd->idx                     = dec->frame_num - 1;
+        fd->dec.pts                 = frame->pts;
+        fd->dec.tb                  = dec->pkt_timebase;
+        fd->dec.frame_num           = dec->frame_num - 1;
         fd->bits_per_raw_sample     = dec->bits_per_raw_sample;
 
         frame->time_base = dec->pkt_timebase;
