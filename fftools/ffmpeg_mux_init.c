@@ -139,7 +139,9 @@ static int choose_encoder(const OptionsContext *o, AVFormatContext *s,
             return AVERROR_ENCODER_NOT_FOUND;
         }
     } else if (strcmp(codec_name, "copy")) {
-        *enc = find_codec_or_die(ost, codec_name, ost->type, 1);
+        int ret = find_codec(ost, codec_name, ost->type, 1, enc);
+        if (ret < 0)
+            return ret;
         ost->par_in->codec_id = (*enc)->id;
     }
 
@@ -208,7 +210,9 @@ static int enc_stats_get_file(AVIOContext **io, const char *path)
             return 0;
         }
 
-    GROW_ARRAY(enc_stats_files, nb_enc_stats_files);
+    ret = GROW_ARRAY(enc_stats_files, nb_enc_stats_files);
+    if (ret < 0)
+        return ret;
 
     esf = &enc_stats_files[nb_enc_stats_files - 1];
 
@@ -320,7 +324,11 @@ static int enc_stats_init(OutputStream *ost, EncStats *es, int pre,
             return ret;
 
         if (val) {
-            GROW_ARRAY(es->components, es->nb_components);
+            ret = GROW_ARRAY(es->components, es->nb_components);
+            if (ret < 0) {
+                av_freep(&val);
+                return ret;
+            }
 
             c          = &es->components[es->nb_components - 1];
             c->type    = ENC_STATS_LITERAL;
@@ -351,7 +359,10 @@ static int enc_stats_init(OutputStream *ost, EncStats *es, int pre,
         }
         next++;
 
-        GROW_ARRAY(es->components, es->nb_components);
+        ret = GROW_ARRAY(es->components, es->nb_components);
+        if (ret < 0)
+            return ret;
+
         c = &es->components[es->nb_components - 1];
 
         for (size_t i = 0; i < FF_ARRAY_ELEMS(fmt_specs); i++) {
@@ -413,8 +424,11 @@ static const AVClass output_stream_class = {
 static MuxStream *mux_stream_alloc(Muxer *mux, enum AVMediaType type)
 {
     const char *type_str = av_get_media_type_string(type);
-    MuxStream *ms = allocate_array_elem(&mux->of.streams, sizeof(*ms),
-                                        &mux->of.nb_streams);
+    MuxStream *ms;
+
+    ms = allocate_array_elem(&mux->of.streams, sizeof(*ms), &mux->of.nb_streams);
+    if (!ms)
+        return NULL;
 
     ms->ost.file_index = mux->of.index;
     ms->ost.index      = mux->of.nb_streams - 1;
@@ -495,6 +509,83 @@ static int parse_matrix_coeffs(void *logctx, uint16_t *dest, const char *str)
     return 0;
 }
 
+static int fmt_in_list(const int *formats, int format)
+{
+    for (; *formats != -1; formats++)
+        if (*formats == format)
+            return 1;
+    return 0;
+}
+
+static enum AVPixelFormat
+choose_pixel_fmt(const AVCodec *codec, enum AVPixelFormat target)
+{
+    const enum AVPixelFormat *p = codec->pix_fmts;
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(target);
+    //FIXME: This should check for AV_PIX_FMT_FLAG_ALPHA after PAL8 pixel format without alpha is implemented
+    int has_alpha = desc ? desc->nb_components % 2 == 0 : 0;
+    enum AVPixelFormat best= AV_PIX_FMT_NONE;
+
+    for (; *p != AV_PIX_FMT_NONE; p++) {
+        best = av_find_best_pix_fmt_of_2(best, *p, target, has_alpha, NULL);
+        if (*p == target)
+            break;
+    }
+    if (*p == AV_PIX_FMT_NONE) {
+        if (target != AV_PIX_FMT_NONE)
+            av_log(NULL, AV_LOG_WARNING,
+                   "Incompatible pixel format '%s' for codec '%s', auto-selecting format '%s'\n",
+                   av_get_pix_fmt_name(target),
+                   codec->name,
+                   av_get_pix_fmt_name(best));
+        return best;
+    }
+    return target;
+}
+
+static enum AVPixelFormat pix_fmt_parse(OutputStream *ost, const char *name)
+{
+    const enum AVPixelFormat *fmts = ost->enc_ctx->codec->pix_fmts;
+    enum AVPixelFormat fmt;
+
+    fmt = av_get_pix_fmt(name);
+    if (fmt == AV_PIX_FMT_NONE) {
+        av_log(ost, AV_LOG_FATAL, "Unknown pixel format requested: %s.\n", name);
+        return AV_PIX_FMT_NONE;
+    }
+
+    /* when the user specified-format is an alias for an endianness-specific
+     * one (e.g. rgb48 -> rgb48be/le), it gets translated into the native
+     * endianness by av_get_pix_fmt();
+     * the following code handles the case when the native endianness is not
+     * supported by the encoder, but the other one is */
+    if (fmts && !fmt_in_list(fmts, fmt)) {
+        const char *name_canonical = av_get_pix_fmt_name(fmt);
+        int len = strlen(name_canonical);
+
+        if (strcmp(name, name_canonical) &&
+            (!strcmp(name_canonical + len - 2, "le") ||
+             !strcmp(name_canonical + len - 2, "be"))) {
+            char name_other[64];
+            enum AVPixelFormat fmt_other;
+
+            snprintf(name_other, sizeof(name_other), "%s%ce",
+                     name, name_canonical[len - 2] == 'l' ? 'b' : 'l');
+            fmt_other = av_get_pix_fmt(name_other);
+            if (fmt_other != AV_PIX_FMT_NONE && fmt_in_list(fmts, fmt_other)) {
+                av_log(ost, AV_LOG_VERBOSE, "Mapping pixel format %s->%s\n",
+                       name, name_other);
+                fmt = fmt_other;
+            }
+        }
+    }
+
+    if (fmts && !fmt_in_list(fmts, fmt))
+        fmt = choose_pixel_fmt(ost->enc_ctx->codec, fmt);
+
+    return fmt;
+}
+
 static int new_stream_video(Muxer *mux, const OptionsContext *o,
                             OutputStream *ost)
 {
@@ -558,9 +649,10 @@ static int new_stream_video(Muxer *mux, const OptionsContext *o,
             if (!*++frame_pix_fmt)
                 frame_pix_fmt = NULL;
         }
-        if (frame_pix_fmt && (video_enc->pix_fmt = av_get_pix_fmt(frame_pix_fmt)) == AV_PIX_FMT_NONE) {
-            av_log(ost, AV_LOG_FATAL, "Unknown pixel format requested: %s.\n", frame_pix_fmt);
-            return AVERROR(EINVAL);
+        if (frame_pix_fmt) {
+            video_enc->pix_fmt = pix_fmt_parse(ost, frame_pix_fmt);
+            if (video_enc->pix_fmt == AV_PIX_FMT_NONE)
+                return AVERROR(EINVAL);
         }
 
         MATCH_PER_STREAM_OPT(intra_matrices, str, intra_matrix, oc, st);
@@ -692,8 +784,11 @@ static int new_stream_video(Muxer *mux, const OptionsContext *o,
 
         ost->vsync_method = video_sync_method;
         MATCH_PER_STREAM_OPT(fps_mode, str, fps_mode, oc, st);
-        if (fps_mode)
-            parse_and_set_vsync(fps_mode, &ost->vsync_method, ost->file_index, ost->index, 0);
+        if (fps_mode) {
+            ret = parse_and_set_vsync(fps_mode, &ost->vsync_method, ost->file_index, ost->index, 0);
+            if (ret < 0)
+                return ret;
+        }
 
         if ((ost->frame_rate.num || ost->max_frame_rate.num) &&
             !(ost->vsync_method == VSYNC_AUTO ||
@@ -1022,11 +1117,26 @@ static int ost_add(Muxer *mux, const OptionsContext *o, enum AVMediaType type,
     if (!st)
         return AVERROR(ENOMEM);
 
-    if (oc->nb_streams - 1 < o->nb_streamid_map)
-        st->id = o->streamid_map[oc->nb_streams - 1];
-
     ms  = mux_stream_alloc(mux, type);
+    if (!ms)
+        return AVERROR(ENOMEM);
+
     ost = &ms->ost;
+
+    if (o->streamid) {
+        AVDictionaryEntry *e;
+        char idx[16], *p;
+        snprintf(idx, sizeof(idx), "%d", ost->index);
+
+        e = av_dict_get(o->streamid, idx, NULL, 0);
+        if (e) {
+            st->id = strtol(e->value, &p, 0);
+            if (!e->value[0] || *p) {
+                av_log(ost, AV_LOG_FATAL, "Invalid stream id: %s\n", e->value);
+                return AVERROR(EINVAL);
+            }
+        }
+    }
 
     ost->par_in = avcodec_parameters_alloc();
     if (!ost->par_in)
@@ -1096,8 +1206,10 @@ static int ost_add(Muxer *mux, const OptionsContext *o, enum AVMediaType type,
         const char *enc_stats_pre = NULL, *enc_stats_post = NULL, *mux_stats = NULL;
         const char *enc_time_base = NULL;
 
-        ost->encoder_opts = filter_codec_opts(o->g->codec_opts, enc->codec_id,
-                                              oc, st, enc->codec);
+        ret = filter_codec_opts(o->g->codec_opts, enc->codec_id,
+                                oc, st, enc->codec, &ost->encoder_opts);
+        if (ret < 0)
+            return ret;
 
         MATCH_PER_STREAM_OPT(presets, str, preset, oc, st);
         ost->autoscale = 1;
@@ -1195,7 +1307,10 @@ static int ost_add(Muxer *mux, const OptionsContext *o, enum AVMediaType type,
             ost->enc_timebase = q;
         }
     } else {
-        ost->encoder_opts = filter_codec_opts(o->g->codec_opts, AV_CODEC_ID_NONE, oc, st, NULL);
+        ret = filter_codec_opts(o->g->codec_opts, AV_CODEC_ID_NONE, oc, st,
+                                NULL, &ost->encoder_opts);
+        if (ret < 0)
+            return ret;
     }
 
 
@@ -1304,7 +1419,9 @@ static int ost_add(Muxer *mux, const OptionsContext *o, enum AVMediaType type,
         (type == AVMEDIA_TYPE_VIDEO || type == AVMEDIA_TYPE_AUDIO)) {
         if (ofilter) {
             ost->filter       = ofilter;
-            ofilter_bind_ost(ofilter, ost);
+            ret = ofilter_bind_ost(ofilter, ost);
+            if (ret < 0)
+                return ret;
         } else {
             ret = init_simple_filtergraph(ost->ist, ost, filters);
             if (ret < 0) {
@@ -1648,7 +1765,7 @@ read_fail:
 
 static int create_streams(Muxer *mux, const OptionsContext *o)
 {
-    static const int (*map_func[])(Muxer *mux, const OptionsContext *o) = {
+    static int (* const map_func[])(Muxer *mux, const OptionsContext *o) = {
         [AVMEDIA_TYPE_VIDEO]    = map_auto_video,
         [AVMEDIA_TYPE_AUDIO]    = map_auto_audio,
         [AVMEDIA_TYPE_SUBTITLE] = map_auto_subtitle,
@@ -2207,8 +2324,9 @@ static int set_dispositions(Muxer *mux, const OptionsContext *o)
     OutputFile                    *of = &mux->of;
     AVFormatContext              *ctx = mux->fc;
 
-    int nb_streams[AVMEDIA_TYPE_NB]   = { 0 };
-    int have_default[AVMEDIA_TYPE_NB] = { 0 };
+    // indexed by type+1, because AVMEDIA_TYPE_UNKNOWN=-1
+    int nb_streams[AVMEDIA_TYPE_NB + 1]   = { 0 };
+    int have_default[AVMEDIA_TYPE_NB + 1] = { 0 };
     int have_manual = 0;
     int ret = 0;
 
@@ -2222,7 +2340,7 @@ static int set_dispositions(Muxer *mux, const OptionsContext *o)
     for (int i = 0; i < ctx->nb_streams; i++) {
         OutputStream *ost = of->streams[i];
 
-        nb_streams[ost->type]++;
+        nb_streams[ost->type + 1]++;
 
         MATCH_PER_STREAM_OPT(disposition, str, dispositions[i], ctx, ost->st);
 
@@ -2232,7 +2350,7 @@ static int set_dispositions(Muxer *mux, const OptionsContext *o)
             ost->st->disposition = ost->ist->st->disposition;
 
             if (ost->st->disposition & AV_DISPOSITION_DEFAULT)
-                have_default[ost->type] = 1;
+                have_default[ost->type + 1] = 1;
         }
     }
 
@@ -2257,12 +2375,12 @@ static int set_dispositions(Muxer *mux, const OptionsContext *o)
             OutputStream *ost = of->streams[i];
             enum AVMediaType type = ost->type;
 
-            if (nb_streams[type] < 2 || have_default[type] ||
+            if (nb_streams[type + 1] < 2 || have_default[type + 1] ||
                 ost->st->disposition & AV_DISPOSITION_ATTACHED_PIC)
                 continue;
 
             ost->st->disposition |= AV_DISPOSITION_DEFAULT;
-            have_default[type] = 1;
+            have_default[type + 1] = 1;
         }
     }
 
@@ -2286,11 +2404,11 @@ static int compare_int64(const void *a, const void *b)
     return FFDIFFSIGN(*(const int64_t *)a, *(const int64_t *)b);
 }
 
-static int parse_forced_key_frames(KeyframeForceCtx *kf, const Muxer *mux,
-                                   const char *spec)
+static int parse_forced_key_frames(void *log, KeyframeForceCtx *kf,
+                                   const Muxer *mux, const char *spec)
 {
     const char *p;
-    int n = 1, i, size, index = 0;
+    int n = 1, i, ret, size, index = 0;
     int64_t t, *pts;
 
     for (p = spec; *p; p++)
@@ -2317,7 +2435,16 @@ static int parse_forced_key_frames(KeyframeForceCtx *kf, const Muxer *mux,
                 !(pts = av_realloc_f(pts, size += nb_ch - 1,
                                      sizeof(*pts))))
                 return AVERROR(ENOMEM);
-            t = p[8] ? parse_time_or_die("force_key_frames", p + 8, 1) : 0;
+
+            if (p[8]) {
+                ret = av_parse_time(&t, p + 8, 1);
+                if (ret < 0) {
+                    av_log(log, AV_LOG_ERROR,
+                           "Invalid chapter time offset: %s\n", p + 8);
+                    goto fail;
+                }
+            } else
+                t = 0;
 
             for (j = 0; j < nb_ch; j++) {
                 const AVChapter *c = ch[j];
@@ -2328,7 +2455,13 @@ static int parse_forced_key_frames(KeyframeForceCtx *kf, const Muxer *mux,
 
         } else {
             av_assert1(index < size);
-            pts[index++] = parse_time_or_die("force_key_frames", p, 1);
+            ret = av_parse_time(&t, p, 1);
+            if (ret < 0) {
+                av_log(log, AV_LOG_ERROR, "Invalid keyframe time: %s\n", p);
+                goto fail;
+            }
+
+            pts[index++] = t;
         }
 
         p = next;
@@ -2340,6 +2473,9 @@ static int parse_forced_key_frames(KeyframeForceCtx *kf, const Muxer *mux,
     kf->pts    = pts;
 
     return 0;
+fail:
+    av_freep(&pts);
+    return ret;
 }
 
 static int process_forced_keyframes(Muxer *mux, const OptionsContext *o)
@@ -2374,7 +2510,7 @@ static int process_forced_keyframes(Muxer *mux, const OptionsContext *o)
         } else if (!strcmp(forced_keyframes, "source_no_drop")) {
             ost->kf.type = KF_FORCE_SOURCE_NO_DROP;
         } else {
-            int ret = parse_forced_key_frames(&ost->kf, mux, forced_keyframes);
+            int ret = parse_forced_key_frames(ost, &ost->kf, mux, forced_keyframes);
             if (ret < 0)
                 return ret;
         }
@@ -2464,6 +2600,9 @@ static Muxer *mux_alloc(void)
 {
     Muxer *mux = allocate_array_elem(&output_files, sizeof(*mux), &nb_output_files);
 
+    if (!mux)
+        return NULL;
+
     mux->of.class = &output_file_class;
     mux->of.index = nb_output_files - 1;
 
@@ -2483,6 +2622,9 @@ int of_open(const OptionsContext *o, const char *filename)
     int64_t stop_time      = o->stop_time;
 
     mux = mux_alloc();
+    if (!mux)
+        return AVERROR(ENOMEM);
+
     of  = &mux->of;
 
     if (stop_time != INT64_MAX && recording_time != INT64_MAX) {

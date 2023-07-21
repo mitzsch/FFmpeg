@@ -816,7 +816,7 @@ finish:
     }
     // non-EOF errors here are all fatal
     if (ret < 0 && ret != AVERROR_EOF)
-        report_and_exit(ret);
+        return ret;
 
     // signal EOF to our downstreams
     if (ist->dec->type == AVMEDIA_TYPE_SUBTITLE)
@@ -825,7 +825,7 @@ finish:
         ret = send_filter_eof(ist);
         if (ret < 0) {
             av_log(NULL, AV_LOG_FATAL, "Error marking filters as finished\n");
-            exit_program(1);
+            return ret;
         }
     }
 
@@ -1115,14 +1115,14 @@ int dec_open(InputStream *ist)
     }
 
     if ((ret = avcodec_open2(ist->dec_ctx, codec, &ist->decoder_opts)) < 0) {
-        if (ret == AVERROR_EXPERIMENTAL)
-            exit_program(1);
-
         av_log(ist, AV_LOG_ERROR, "Error while opening decoder: %s\n",
                av_err2str(ret));
         return ret;
     }
-    assert_avoptions(ist->decoder_opts);
+
+    ret = check_avoptions(ist->decoder_opts);
+    if (ret < 0)
+        return ret;
 
     ret = dec_thread_start(ist);
     if (ret < 0) {

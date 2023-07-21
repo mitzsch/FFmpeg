@@ -880,7 +880,10 @@ int ist_output_add(InputStream *ist, OutputStream *ost)
     if (ret < 0)
         return ret;
 
-    GROW_ARRAY(ist->outputs, ist->nb_outputs);
+    ret = GROW_ARRAY(ist->outputs, ist->nb_outputs);
+    if (ret < 0)
+        return ret;
+
     ist->outputs[ist->nb_outputs - 1] = ost;
 
     return 0;
@@ -894,7 +897,10 @@ int ist_filter_add(InputStream *ist, InputFilter *ifilter, int is_simple)
     if (ret < 0)
         return ret;
 
-    GROW_ARRAY(ist->filters, ist->nb_filters);
+    ret = GROW_ARRAY(ist->filters, ist->nb_filters);
+    if (ret < 0)
+        return ret;
+
     ist->filters[ist->nb_filters - 1] = ifilter;
 
     // initialize fallback parameters for filtering
@@ -905,19 +911,22 @@ int ist_filter_add(InputStream *ist, InputFilter *ifilter, int is_simple)
     return 0;
 }
 
-static const AVCodec *choose_decoder(const OptionsContext *o, AVFormatContext *s, AVStream *st,
-                                     enum HWAccelID hwaccel_id, enum AVHWDeviceType hwaccel_device_type)
+static int choose_decoder(const OptionsContext *o, AVFormatContext *s, AVStream *st,
+                          enum HWAccelID hwaccel_id, enum AVHWDeviceType hwaccel_device_type,
+                          const AVCodec **pcodec)
 
 {
     char *codec_name = NULL;
 
     MATCH_PER_STREAM_OPT(codec_names, str, codec_name, s, st);
     if (codec_name) {
-        const AVCodec *codec = find_codec_or_die(NULL, codec_name, st->codecpar->codec_type, 0);
-        st->codecpar->codec_id = codec->id;
-        if (recast_media && st->codecpar->codec_type != codec->type)
-            st->codecpar->codec_type = codec->type;
-        return codec;
+        int ret = find_codec(NULL, codec_name, st->codecpar->codec_type, 0, pcodec);
+        if (ret < 0)
+            return ret;
+        st->codecpar->codec_id = (*pcodec)->id;
+        if (recast_media && st->codecpar->codec_type != (*pcodec)->type)
+            st->codecpar->codec_type = (*pcodec)->type;
+        return 0;
     } else {
         if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
             hwaccel_id == HWACCEL_GENERIC &&
@@ -936,13 +945,15 @@ static const AVCodec *choose_decoder(const OptionsContext *o, AVFormatContext *s
                     if (config->device_type == hwaccel_device_type) {
                         av_log(NULL, AV_LOG_VERBOSE, "Selecting decoder '%s' because of requested hwaccel method %s\n",
                                c->name, av_hwdevice_get_type_name(hwaccel_device_type));
-                        return c;
+                        *pcodec = c;
+                        return 0;
                     }
                 }
             }
         }
 
-        return avcodec_find_decoder(st->codecpar->codec_id);
+        *pcodec = avcodec_find_decoder(st->codecpar->codec_id);
+        return 0;
     }
 }
 
@@ -1018,8 +1029,11 @@ static DemuxStream *demux_stream_alloc(Demuxer *d, AVStream *st)
 {
     const char *type_str = av_get_media_type_string(st->codecpar->codec_type);
     InputFile    *f = &d->f;
-    DemuxStream *ds = allocate_array_elem(&f->streams, sizeof(*ds),
-                                          &f->nb_streams);
+    DemuxStream *ds;
+
+    ds = allocate_array_elem(&f->streams, sizeof(*ds), &f->nb_streams);
+    if (!ds)
+        return NULL;
 
     ds->ist.st         = st;
     ds->ist.file_index = f->index;
@@ -1051,6 +1065,9 @@ static int ist_add(const OptionsContext *o, Demuxer *d, AVStream *st)
     int ret;
 
     ds  = demux_stream_alloc(d, st);
+    if (!ds)
+        return AVERROR(ENOMEM);
+
     ist = &ds->ist;
 
     ist->discard = 1;
@@ -1154,8 +1171,15 @@ static int ist_add(const OptionsContext *o, Demuxer *d, AVStream *st)
         }
     }
 
-    ist->dec = choose_decoder(o, ic, st, ist->hwaccel_id, ist->hwaccel_device_type);
-    ist->decoder_opts = filter_codec_opts(o->g->codec_opts, ist->st->codecpar->codec_id, ic, st, ist->dec);
+    ret = choose_decoder(o, ic, st, ist->hwaccel_id, ist->hwaccel_device_type,
+                         &ist->dec);
+    if (ret < 0)
+        return ret;
+
+    ret = filter_codec_opts(o->g->codec_opts, ist->st->codecpar->codec_id,
+                            ic, st, ist->dec, &ist->decoder_opts);
+    if (ret < 0)
+        return ret;
 
     ist->reinit_filters = -1;
     MATCH_PER_STREAM_OPT(reinit_filters, i, ist->reinit_filters, ic, st);
@@ -1328,6 +1352,9 @@ static Demuxer *demux_alloc(void)
 {
     Demuxer *d = allocate_array_elem(&input_files, sizeof(*d), &nb_input_files);
 
+    if (!d)
+        return NULL;
+
     d->f.class = &input_file_class;
     d->f.index = nb_input_files - 1;
 
@@ -1342,7 +1369,7 @@ int ifile_open(const OptionsContext *o, const char *filename)
     InputFile *f;
     AVFormatContext *ic;
     const AVInputFormat *file_iformat = NULL;
-    int err, i, ret;
+    int err, i, ret = 0;
     int64_t timestamp;
     AVDictionary *unused_opts = NULL;
     const AVDictionaryEntry *e = NULL;
@@ -1358,6 +1385,9 @@ int ifile_open(const OptionsContext *o, const char *filename)
     int64_t recording_time = o->recording_time;
 
     d = demux_alloc();
+    if (!d)
+        return AVERROR(ENOMEM);
+
     f = &d->f;
 
     if (stop_time != INT64_MAX && recording_time != INT64_MAX) {
@@ -1437,13 +1467,19 @@ int ifile_open(const OptionsContext *o, const char *filename)
     MATCH_PER_TYPE_OPT(codec_names, str,     data_codec_name, ic, "d");
 
     if (video_codec_name)
-        ic->video_codec    = find_codec_or_die(NULL, video_codec_name   , AVMEDIA_TYPE_VIDEO   , 0);
+        ret = err_merge(ret, find_codec(NULL, video_codec_name   , AVMEDIA_TYPE_VIDEO   , 0,
+                                        &ic->video_codec));
     if (audio_codec_name)
-        ic->audio_codec    = find_codec_or_die(NULL, audio_codec_name   , AVMEDIA_TYPE_AUDIO   , 0);
+        ret = err_merge(ret, find_codec(NULL, audio_codec_name   , AVMEDIA_TYPE_AUDIO   , 0,
+                                        &ic->audio_codec));
     if (subtitle_codec_name)
-        ic->subtitle_codec = find_codec_or_die(NULL, subtitle_codec_name, AVMEDIA_TYPE_SUBTITLE, 0);
+        ret = err_merge(ret, find_codec(NULL, subtitle_codec_name, AVMEDIA_TYPE_SUBTITLE, 0,
+                                        &ic->subtitle_codec));
     if (data_codec_name)
-        ic->data_codec     = find_codec_or_die(NULL, data_codec_name    , AVMEDIA_TYPE_DATA    , 0);
+        ret = err_merge(ret, find_codec(NULL, data_codec_name    , AVMEDIA_TYPE_DATA,     0,
+                                        &ic->data_codec));
+    if (ret < 0)
+        return ret;
 
     ic->video_codec_id     = video_codec_name    ? ic->video_codec->id    : AV_CODEC_ID_NONE;
     ic->audio_codec_id     = audio_codec_name    ? ic->audio_codec->id    : AV_CODEC_ID_NONE;
@@ -1475,15 +1511,27 @@ int ifile_open(const OptionsContext *o, const char *filename)
     if (scan_all_pmts_set)
         av_dict_set(&o->g->format_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE);
     remove_avoptions(&o->g->format_opts, o->g->codec_opts);
-    assert_avoptions(o->g->format_opts);
+
+    ret = check_avoptions(o->g->format_opts);
+    if (ret < 0)
+        return ret;
 
     /* apply forced codec ids */
-    for (i = 0; i < ic->nb_streams; i++)
-        choose_decoder(o, ic, ic->streams[i], HWACCEL_NONE, AV_HWDEVICE_TYPE_NONE);
+    for (i = 0; i < ic->nb_streams; i++) {
+        const AVCodec *dummy;
+        ret = choose_decoder(o, ic, ic->streams[i], HWACCEL_NONE, AV_HWDEVICE_TYPE_NONE,
+                             &dummy);
+        if (ret < 0)
+            return ret;
+    }
 
     if (o->find_stream_info) {
-        AVDictionary **opts = setup_find_stream_info_opts(ic, o->g->codec_opts);
+        AVDictionary **opts;
         int orig_nb_streams = ic->nb_streams;
+
+        ret = setup_find_stream_info_opts(ic, o->g->codec_opts, &opts);
+        if (ret < 0)
+            return ret;
 
         /* If not enough info to get the stream parameters, we decode the
            first frames to get it. (used in mpeg case for example) */

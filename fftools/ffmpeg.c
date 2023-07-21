@@ -457,13 +457,15 @@ void remove_avoptions(AVDictionary **a, AVDictionary *b)
     }
 }
 
-void assert_avoptions(AVDictionary *m)
+int check_avoptions(AVDictionary *m)
 {
     const AVDictionaryEntry *t;
     if ((t = av_dict_get(m, "", NULL, AV_DICT_IGNORE_SUFFIX))) {
         av_log(NULL, AV_LOG_FATAL, "Option %s not found.\n", t->key);
-        exit_program(1);
+        return AVERROR_OPTION_NOT_FOUND;
     }
+
+    return 0;
 }
 
 void update_benchmark(const char *fmt, ...)
@@ -814,8 +816,11 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
     int eof_reached = 0;
     int duration_exceeded;
 
-    if (ist->decoding_needed)
+    if (ist->decoding_needed) {
         ret = dec_packet(ist, pkt, no_eof);
+        if (ret < 0 && ret != AVERROR_EOF)
+            return ret;
+    }
     if (ret == AVERROR_EOF || (!pkt && !ist->decoding_needed))
         eof_reached = 1;
 
@@ -1120,7 +1125,9 @@ static int process_input(int file_index)
                 OutputStream *ost = ist->outputs[oidx];
                 OutputFile    *of = output_files[ost->file_index];
                 close_output_stream(ost);
-                of_output_packet(of, ost, NULL);
+                ret = of_output_packet(of, ost, NULL);
+                if (ret < 0)
+                    return ret;
             }
         }
 
@@ -1171,7 +1178,15 @@ static int transcode_step(OutputStream *ost)
     if (ret < 0)
         return ret == AVERROR_EOF ? 0 : ret;
 
-    return reap_filters(0);
+    // process_input() above might have caused output to become available
+    // in multiple filtergraphs, so we process all of them
+    for (int i = 0; i < nb_filtergraphs; i++) {
+        ret = reap_filters(filtergraphs[i], 0);
+        if (ret < 0)
+            return ret;
+    }
+
+    return 0;
 }
 
 /*
@@ -1242,7 +1257,7 @@ static int transcode(int *err_rate_exceeded)
         } else if (err_rate)
             av_log(ist, AV_LOG_VERBOSE, "Decode error rate %g\n", err_rate);
     }
-    enc_flush();
+    ret = err_merge(ret, enc_flush());
 
     term_exit();
 
@@ -1309,8 +1324,6 @@ int main(int argc, char **argv)
 
     init_dynload();
 
-    register_exit(ffmpeg_cleanup);
-
     setvbuf(stderr,NULL,_IONBF,0); /* win32 runtime needs this */
 
     av_log_set_flags(AV_LOG_SKIP_REPEATED);
@@ -1326,17 +1339,19 @@ int main(int argc, char **argv)
     /* parse options and open all input/output files */
     ret = ffmpeg_parse_options(argc, argv);
     if (ret < 0)
-        exit_program(1);
+        goto finish;
 
     if (nb_output_files <= 0 && nb_input_files == 0) {
         show_usage();
         av_log(NULL, AV_LOG_WARNING, "Use -h to get full help or, even better, run 'man %s'\n", program_name);
-        exit_program(1);
+        ret = 1;
+        goto finish;
     }
 
     if (nb_output_files <= 0) {
         av_log(NULL, AV_LOG_FATAL, "At least one output file must be specified\n");
-        exit_program(1);
+        ret = 1;
+        goto finish;
     }
 
     current_time = ti = get_benchmark_time_stamps();
@@ -1355,6 +1370,10 @@ int main(int argc, char **argv)
     ret = received_nb_signals ? 255 :
           err_rate_exceeded   ?  69 : ret;
 
-    exit_program(ret);
+finish:
+    if (ret == AVERROR_EXIT)
+        ret = 0;
+
+    ffmpeg_cleanup(ret);
     return ret;
 }
