@@ -2824,7 +2824,7 @@ static void fill_buffer(WavPackEncodeContext *s,
 
     switch (s->avctx->sample_fmt) {
     case AV_SAMPLE_FMT_U8P:
-        COPY_SAMPLES(int8_t, 0x80, 0);
+        COPY_SAMPLES(uint8_t, 0x80, 0);
         break;
     case AV_SAMPLE_FMT_S16P:
         COPY_SAMPLES(int16_t, 0, 0);
@@ -2963,7 +2963,8 @@ const FFCodec ff_wavpack_encoder = {
     CODEC_LONG_NAME("WavPack"),
     .p.type         = AVMEDIA_TYPE_AUDIO,
     .p.id           = AV_CODEC_ID_WAVPACK,
-    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_SMALL_LAST_FRAME,
+    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_SMALL_LAST_FRAME |
+                      AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .priv_data_size = sizeof(WavPackEncodeContext),
     .p.priv_class   = &wavpack_encoder_class,
     .init           = wavpack_encode_init,

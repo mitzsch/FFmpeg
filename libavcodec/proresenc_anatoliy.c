@@ -746,7 +746,8 @@ static int prores_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     if (avctx->profile >= FF_PROFILE_PRORES_4444) /* 4444 or 4444 Xq */
         frame_flags |= 0x40; /* 444 chroma */
     if (ctx->is_interlaced) {
-        if (pict->top_field_first || !pict->interlaced_frame) { /* tff frame or progressive frame interpret as tff */
+        if ((pict->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) || !(pict->flags & AV_FRAME_FLAG_INTERLACED)) {
+            /* tff frame or progressive frame interpret as tff */
             av_log(avctx, AV_LOG_DEBUG, "use interlaced encoding, top field first\n");
             frame_flags |= 0x04; /* interlaced tff */
             is_top_field_first = 1;
@@ -944,7 +945,8 @@ const FFCodec ff_prores_aw_encoder = {
     CODEC_LONG_NAME("Apple ProRes"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_PRORES,
-    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS,
+    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS |
+                      AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .p.pix_fmts     = pix_fmts,
     .priv_data_size = sizeof(ProresContext),
     .init           = prores_encode_init,
@@ -960,7 +962,8 @@ const FFCodec ff_prores_encoder = {
     CODEC_LONG_NAME("Apple ProRes"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_PRORES,
-    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS,
+    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS |
+                      AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .p.pix_fmts     = pix_fmts,
     .priv_data_size = sizeof(ProresContext),
     .init           = prores_encode_init,

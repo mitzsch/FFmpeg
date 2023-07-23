@@ -42,6 +42,7 @@
 #include "libavutil/mastering_display_metadata.h"
 #include "libavutil/video_enc_params.h"
 #include "libavutil/detection_bbox.h"
+#include "libavutil/ambient_viewing_environment.h"
 #include "libavutil/uuid.h"
 
 #include "avfilter.h"
@@ -353,19 +354,20 @@ static void dump_dynamic_hdr_vivid(AVFilterContext *ctx, AVFrameSideData *sd)
                 av_log(ctx, AV_LOG_INFO, "3Spline_enable_flag[%d][%d]: %d, ",
                        w, i, tm_params->three_Spline_enable_flag);
                 if (tm_params->three_Spline_enable_flag) {
-                    av_log(ctx, AV_LOG_INFO, "3Spline_TH_mode[%d][%d]:  %d, ", w, i, tm_params->three_Spline_TH_mode);
-
                     for (int j = 0; j < tm_params->three_Spline_num; j++) {
-                        av_log(ctx, AV_LOG_INFO, "3Spline_TH_enable_MB[%d][%d][%d]: %.4f, ",
-                                w, i, j, av_q2d(tm_params->three_Spline_TH_enable_MB));
+                        const AVHDRVivid3SplineParams *three_spline = &tm_params->three_spline[j];
+                        av_log(ctx, AV_LOG_INFO, "3Spline_TH_mode[%d][%d]:  %d, ", w, i, three_spline->th_mode);
+                        if (three_spline->th_mode == 0 || three_spline->th_mode == 2)
+                            av_log(ctx, AV_LOG_INFO, "3Spline_TH_enable_MB[%d][%d][%d]: %.4f, ",
+                                    w, i, j, av_q2d(three_spline->th_enable_mb));
                         av_log(ctx, AV_LOG_INFO, "3Spline_TH_enable[%d][%d][%d]: %.4f, ",
-                                w, i, j, av_q2d(tm_params->three_Spline_TH_enable));
+                                w, i, j, av_q2d(three_spline->th_enable));
                         av_log(ctx, AV_LOG_INFO, "3Spline_TH_Delta1[%d][%d][%d]: %.4f, ",
-                                w, i, j, av_q2d(tm_params->three_Spline_TH_Delta1));
+                                w, i, j, av_q2d(three_spline->th_delta1));
                         av_log(ctx, AV_LOG_INFO, "3Spline_TH_Delta2[%d][%d][%d]: %.4f, ",
-                                w, i, j, av_q2d(tm_params->three_Spline_TH_Delta2));
+                                w, i, j, av_q2d(three_spline->th_delta2));
                         av_log(ctx, AV_LOG_INFO, "3Spline_enable_Strength[%d][%d][%d]: %.4f, ",
-                                w, i, j, av_q2d(tm_params->three_Spline_enable_Strength));
+                                w, i, j, av_q2d(three_spline->enable_strength));
                     }
                 }
             }
@@ -601,6 +603,17 @@ static void dump_dovi_metadata(AVFilterContext *ctx, const AVFrameSideData *sd)
     av_log(ctx, AV_LOG_INFO, "source_diagonal=%"PRIu16"; ", color->source_diagonal);
 }
 
+static void dump_ambient_viewing_environment(AVFilterContext *ctx, const AVFrameSideData *sd)
+{
+    const AVAmbientViewingEnvironment *ambient_viewing_environment =
+                                               (const AVAmbientViewingEnvironment *)sd->data;
+
+    av_log(ctx, AV_LOG_INFO, "ambient_illuminance=%f, ambient_light_x=%f, ambient_light_y=%f",
+           av_q2d(ambient_viewing_environment->ambient_illuminance),
+           av_q2d(ambient_viewing_environment->ambient_light_x),
+           av_q2d(ambient_viewing_environment->ambient_light_y));
+}
+
 static void dump_color_property(AVFilterContext *ctx, AVFrame *frame)
 {
     const char *color_range_str     = av_color_range_name(frame->color_range);
@@ -701,18 +714,17 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
 
     av_log(ctx, AV_LOG_INFO,
            "n:%4"PRId64" pts:%7s pts_time:%-7s duration:%7"PRId64
-           " duration_time:%-7s pos:%9"PRId64" "
+           " duration_time:%-7s "
            "fmt:%s sar:%d/%d s:%dx%d i:%c iskey:%d type:%c ",
            inlink->frame_count_out,
            av_ts2str(frame->pts), av_ts2timestr(frame->pts, &inlink->time_base),
            frame->duration, av_ts2timestr(frame->duration, &inlink->time_base),
-           frame->pkt_pos,
            desc->name,
            frame->sample_aspect_ratio.num, frame->sample_aspect_ratio.den,
            frame->width, frame->height,
-           !frame->interlaced_frame ? 'P' :         /* Progressive  */
-           frame->top_field_first   ? 'T' : 'B',    /* Top / Bottom */
-           frame->key_frame,
+           !(frame->flags & AV_FRAME_FLAG_INTERLACED)     ? 'P' :         /* Progressive  */
+           (frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? 'T' : 'B',    /* Top / Bottom */
+           !!(frame->flags & AV_FRAME_FLAG_KEY),
            av_get_picture_type_char(frame->pict_type));
 
     if (s->calculate_checksums) {
@@ -796,6 +808,9 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
             break;
         case AV_FRAME_DATA_DOVI_METADATA:
             dump_dovi_metadata(ctx, sd);
+            break;
+        case AV_FRAME_DATA_AMBIENT_VIEWING_ENVIRONMENT:
+            dump_ambient_viewing_environment(ctx, sd);
             break;
         default:
             if (name)

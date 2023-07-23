@@ -1251,7 +1251,8 @@ static void dnxhd_load_picture(DNXHDEncContext *ctx, const AVFrame *frame)
         ctx->thread[i]->dct_uv_offset = ctx->m.uvlinesize*8;
     }
 
-    ctx->cur_field = frame->interlaced_frame && !frame->top_field_first;
+    ctx->cur_field = (frame->flags & AV_FRAME_FLAG_INTERLACED) &&
+                     !(frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST);
 }
 
 static int dnxhd_encode_picture(AVCodecContext *avctx, AVPacket *pkt,
@@ -1359,7 +1360,7 @@ const FFCodec ff_dnxhd_encoder = {
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_DNXHD,
     .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS |
-                      AV_CODEC_CAP_SLICE_THREADS,
+                      AV_CODEC_CAP_SLICE_THREADS | AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .priv_data_size = sizeof(DNXHDEncContext),
     .init           = dnxhd_encode_init,
     FF_CODEC_ENCODE_CB(dnxhd_encode_picture),
