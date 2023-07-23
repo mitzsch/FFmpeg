@@ -82,7 +82,7 @@ static av_cold int ac3_fixed_mdct_init(AC3EncodeContext *s)
     if (!iwin)
         return AVERROR(ENOMEM);
 
-    ff_kbd_window_init(fwin, 5.0, AC3_BLOCK_SIZE);
+    avpriv_kbd_window_init(fwin, 5.0, AC3_BLOCK_SIZE);
     for (int i = 0; i < AC3_BLOCK_SIZE; i++)
         iwin[i] = lrintf(fwin[i] * (1 << 22));
 
@@ -112,7 +112,7 @@ const FFCodec ff_ac3_fixed_encoder = {
     CODEC_LONG_NAME("ATSC A/52A (AC-3)"),
     .p.type          = AVMEDIA_TYPE_AUDIO,
     .p.id            = AV_CODEC_ID_AC3,
-    .p.capabilities  = AV_CODEC_CAP_DR1,
+    .p.capabilities  = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .priv_data_size  = sizeof(AC3EncodeContext),
     .init            = ac3_fixed_encode_init,
     FF_CODEC_ENCODE_CB(ff_ac3_fixed_encode_frame),

@@ -916,10 +916,10 @@ static void encode_slice_header(FFV1Context *f, FFV1Context *fs)
         put_symbol(c, state, f->plane[j].quant_table_index, 0);
         av_assert0(f->plane[j].quant_table_index == f->context_model);
     }
-    if (!f->cur_enc_frame->interlaced_frame)
+    if (!(f->cur_enc_frame->flags & AV_FRAME_FLAG_INTERLACED))
         put_symbol(c, state, 3, 0);
     else
-        put_symbol(c, state, 1 + !f->cur_enc_frame->top_field_first, 0);
+        put_symbol(c, state, 1 + !(f->cur_enc_frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST), 0);
     put_symbol(c, state, f->cur_enc_frame->sample_aspect_ratio.num, 0);
     put_symbol(c, state, f->cur_enc_frame->sample_aspect_ratio.den, 0);
     if (f->version > 3) {
@@ -1231,8 +1231,6 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
 
     f->picture_number++;
     pkt->size   = buf_p - pkt->data;
-    pkt->pts    =
-    pkt->dts    = pict->pts;
     pkt->flags |= AV_PKT_FLAG_KEY * f->key_frame;
     *got_packet = 1;
 
@@ -1272,7 +1270,8 @@ const FFCodec ff_ffv1_encoder = {
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_FFV1,
     .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY |
-                      AV_CODEC_CAP_SLICE_THREADS,
+                      AV_CODEC_CAP_SLICE_THREADS |
+                      AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .priv_data_size = sizeof(FFV1Context),
     .init           = encode_init,
     FF_CODEC_ENCODE_CB(encode_frame),
@@ -1301,5 +1300,5 @@ const FFCodec ff_ffv1_encoder = {
 
     },
     .p.priv_class   = &ffv1_class,
-    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP | FF_CODEC_CAP_EOF_FLUSH,
 };

@@ -37,10 +37,18 @@
 typedef struct MuxStream {
     OutputStream ost;
 
+    // name used for logging
+    char log_name[32];
+
     /* the packets are buffered here until the muxer is ready to be initialized */
     AVFifo *muxing_queue;
 
     AVBSFContext *bsf_ctx;
+    AVPacket     *bsf_pkt;
+
+    AVPacket     *pkt;
+
+    EncStats stats;
 
     int64_t max_frames;
 
@@ -55,13 +63,34 @@ typedef struct MuxStream {
     /* Threshold after which max_muxing_queue_size will be in effect */
     size_t muxing_queue_data_threshold;
 
+    // timestamp from which the streamcopied streams should start,
+    // in AV_TIME_BASE_Q;
+    // everything before it should be discarded
+    int64_t ts_copy_start;
+
     /* dts of the last packet sent to the muxer, in the stream timebase
      * used for making up missing dts values */
     int64_t last_mux_dts;
+
+    int64_t    stream_duration;
+    AVRational stream_duration_tb;
+
+    // audio streamcopy - state for av_rescale_delta()
+    int64_t ts_rescale_delta_last;
+
+    // combined size of all the packets sent to the muxer
+    uint64_t data_size_mux;
+
+    int copy_initial_nonkeyframes;
+    int copy_prior_start;
+    int streamcopy_started;
 } MuxStream;
 
 typedef struct Muxer {
     OutputFile of;
+
+    // name used for logging
+    char log_name[32];
 
     AVFormatContext *fc;
 
