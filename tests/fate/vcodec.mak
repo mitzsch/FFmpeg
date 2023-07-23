@@ -210,9 +210,9 @@ fate-vsynth%-h263p:              ENCOPTS = -qscale 2 -flags +aic -umv 1 -aiv 1 -
 FATE_VCODEC_SCALE-$(call ENCDEC, HUFFYUV, AVI) += huffyuv huffyuvbgr24 huffyuvbgra
 fate-vsynth%-huffyuv:            ENCOPTS = -c:v huffyuv -pix_fmt yuv422p -sws_flags neighbor
 fate-vsynth%-huffyuv:            DECOPTS = -sws_flags neighbor
-fate-vsynth%-huffyuvbgr24:       ENCOPTS = -c:v huffyuv -pix_fmt bgr24 -sws_flags neighbor
+fate-vsynth%-huffyuvbgr24:       ENCOPTS = -c:v huffyuv -pix_fmt rgb24 -sws_flags neighbor
 fate-vsynth%-huffyuvbgr24:       DECOPTS = -sws_flags neighbor
-fate-vsynth%-huffyuvbgra:        ENCOPTS = -c:v huffyuv -pix_fmt bgr32 -sws_flags neighbor
+fate-vsynth%-huffyuvbgra:        ENCOPTS = -c:v huffyuv -pix_fmt rgb32 -sws_flags neighbor
 fate-vsynth%-huffyuvbgra:        DECOPTS = -sws_flags neighbor
 
 FATE_VCODEC_SCALE-$(call ENCDEC, JPEGLS, AVI) += jpegls
@@ -338,6 +338,9 @@ fate-vsynth%-msmpeg4:            ENCOPTS = -qscale 10
 FATE_VCODEC-$(call ENCDEC, MSMPEG4V2, AVI) += msmpeg4v2
 fate-vsynth%-msmpeg4v2:          ENCOPTS = -qscale 10
 
+FATE_VCODEC_SCALE-$(call ENCDEC, MSRLE, AVI) += msrle
+fate-vsynth%-msrle:              CODEC   = msrle
+
 FATE_VCODEC_SCALE-$(call ENCDEC, PNG, AVI) += mpng
 fate-vsynth%-mpng:               CODEC   = png
 
@@ -400,6 +403,10 @@ fate-vsynth%-rv10:               FMT     = rm
 FATE_VCODEC-$(call ENCDEC, RV20, RM)    += rv20
 fate-vsynth%-rv20:               ENCOPTS = -qscale 10
 fate-vsynth%-rv20:               FMT     = rm
+
+FATE_VCODEC_SCALE-$(call ENCDEC, SMC, MOV) += smc
+fate-vsynth%-smc:                CODEC   = smc
+fate-vsynth%-smc:                FMT     = mov
 
 FATE_VCODEC_SCALE-$(call ENCDEC, SNOW, AVI) += snow snow-hpel
 fate-vsynth%-snow:               ENCOPTS = -qscale 2 -flags +qpel \

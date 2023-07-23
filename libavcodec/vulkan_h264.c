@@ -68,7 +68,14 @@ static int vk_h264_fill_pict(AVCodecContext *avctx, H264Picture **ref_src,
             .top_field_flag    = is_field ? !!(picture_structure & PICT_TOP_FIELD)    : 0,
             .bottom_field_flag = is_field ? !!(picture_structure & PICT_BOTTOM_FIELD) : 0,
             .used_for_long_term_reference = pic->reference && pic->long_ref,
-            .is_non_existing = 0,
+            /*
+             * flags.is_non_existing is used to indicate whether the picture is marked as
+             * “non-existing” as defined in section 8.2.5.2 of the ITU-T H.264 Specification;
+             * 8.2.5.2 Decoding process for gaps in frame_num
+             * corresponds to the code in h264_slice.c:h264_field_start,
+             * which sets the invalid_gap flag when decoding.
+             */
+            .is_non_existing = pic->invalid_gap,
         },
     };
 
@@ -372,12 +379,10 @@ static int vk_h264_start_frame(AVCodecContext          *avctx,
     H264VulkanDecodePicture *hp = pic->hwaccel_picture_private;
     FFVulkanDecodePicture *vp = &hp->vp;
 
-    if (!dec->session_params || dec->params_changed) {
-        av_buffer_unref(&dec->session_params);
+    if (!dec->session_params) {
         err = vk_h264_create_params(avctx, &dec->session_params);
         if (err < 0)
             return err;
-        dec->params_changed = 0;
     }
 
     /* Fill in main slot */
@@ -456,7 +461,6 @@ static int vk_h264_start_frame(AVCodecContext          *avctx,
     hp->h264_pic_info = (VkVideoDecodeH264PictureInfoKHR) {
         .sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_PICTURE_INFO_KHR,
         .pStdPictureInfo = &hp->h264pic,
-        .sliceCount = 0,
     };
 
     vp->decode_info = (VkVideoDecodeInfoKHR) {
@@ -513,8 +517,20 @@ static int vk_h264_end_frame(AVCodecContext *avctx)
     FFVulkanDecodePicture *rvp[H264_MAX_PICTURE_COUNT] = { 0 };
     AVFrame *rav[H264_MAX_PICTURE_COUNT] = { 0 };
 
-    if (!dec->session_params)
+    if (!hp->h264_pic_info.sliceCount)
+        return 0;
+
+    if (!vp->slices_buf)
         return AVERROR(EINVAL);
+
+    if (!dec->session_params) {
+        int err = vk_h264_create_params(avctx, &dec->session_params);
+        if (err < 0)
+            return err;
+
+        hp->h264pic.seq_parameter_set_id = pic->pps->sps_id;
+        hp->h264pic.pic_parameter_set_id = pic->pps->pps_id;
+    }
 
     for (int i = 0; i < vp->decode_info.referenceSlotCount; i++) {
         H264Picture *rp = hp->ref_src[i];
@@ -554,7 +570,7 @@ const AVHWAccel ff_h264_vulkan_hwaccel = {
     .frame_priv_data_size  = sizeof(H264VulkanDecodePicture),
     .init                  = &ff_vk_decode_init,
     .update_thread_context = &ff_vk_update_thread_context,
-    .decode_params         = &ff_vk_params_changed,
+    .decode_params         = &ff_vk_params_invalidate,
     .flush                 = &ff_vk_decode_flush,
     .uninit                = &ff_vk_decode_uninit,
     .frame_params          = &ff_vk_frame_params,

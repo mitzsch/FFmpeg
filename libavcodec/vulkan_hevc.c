@@ -767,12 +767,10 @@ static int vk_hevc_start_frame(AVCodecContext          *avctx,
     const HEVCPPS *pps = h->ps.pps;
     int nb_refs = 0;
 
-    if (!dec->session_params || dec->params_changed) {
-        av_buffer_unref(&dec->session_params);
+    if (!dec->session_params) {
         err = vk_hevc_create_params(avctx, &dec->session_params);
         if (err < 0)
             return err;
-        dec->params_changed = 0;
     }
 
     hp->h265pic = (StdVideoDecodeH265PictureInfo) {
@@ -855,7 +853,6 @@ static int vk_hevc_start_frame(AVCodecContext          *avctx,
         .sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_PICTURE_INFO_KHR,
         .pStdPictureInfo = &hp->h265pic,
         .sliceSegmentCount = 0,
-        .pSliceSegmentOffsets = vp->slice_off,
     };
 
     vp->decode_info = (VkVideoDecodeInfoKHR) {
@@ -897,11 +894,41 @@ static int vk_hevc_decode_slice(AVCodecContext *avctx,
 static int vk_hevc_end_frame(AVCodecContext *avctx)
 {
     const HEVCContext *h = avctx->priv_data;
+    FFVulkanDecodeContext *dec = avctx->internal->hwaccel_priv_data;
     HEVCFrame *pic = h->ref;
     HEVCVulkanDecodePicture *hp = pic->hwaccel_picture_private;
     FFVulkanDecodePicture *vp = &hp->vp;
     FFVulkanDecodePicture *rvp[HEVC_MAX_REFS] = { 0 };
     AVFrame *rav[HEVC_MAX_REFS] = { 0 };
+    int err;
+
+    if (!hp->h265_pic_info.sliceSegmentCount)
+        return 0;
+
+    if (!dec->session_params) {
+        const HEVCSPS *sps = h->ps.sps;
+        const HEVCPPS *pps = h->ps.pps;
+
+        if (!pps) {
+            unsigned int pps_id = h->sh.pps_id;
+            if (pps_id < HEVC_MAX_PPS_COUNT && h->ps.pps_list[pps_id] != NULL)
+                pps = (const HEVCPPS *)h->ps.pps_list[pps_id]->data;
+        }
+
+        if (!pps) {
+            av_log(avctx, AV_LOG_ERROR,
+                   "Encountered frame without a valid active PPS reference.\n");
+            return AVERROR_INVALIDDATA;
+        }
+
+        err = vk_hevc_create_params(avctx, &dec->session_params);
+        if (err < 0)
+            return err;
+
+        hp->h265pic.sps_video_parameter_set_id = sps->vps_id;
+        hp->h265pic.pps_seq_parameter_set_id = pps->sps_id;
+        hp->h265pic.pps_pic_parameter_set_id = pps->pps_id;
+    }
 
     for (int i = 0; i < vp->decode_info.referenceSlotCount; i++) {
         HEVCVulkanDecodePicture *rfhp = hp->ref_src[i]->hwaccel_picture_private;
@@ -939,7 +966,7 @@ const AVHWAccel ff_hevc_vulkan_hwaccel = {
     .frame_priv_data_size  = sizeof(HEVCVulkanDecodePicture),
     .init                  = &ff_vk_decode_init,
     .update_thread_context = &ff_vk_update_thread_context,
-    .decode_params         = &ff_vk_params_changed,
+    .decode_params         = &ff_vk_params_invalidate,
     .flush                 = &ff_vk_decode_flush,
     .uninit                = &ff_vk_decode_uninit,
     .frame_params          = &ff_vk_frame_params,

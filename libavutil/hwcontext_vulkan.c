@@ -52,7 +52,9 @@
 #if CONFIG_VAAPI
 #include <va/va_drmcommon.h>
 #endif
+#ifdef __linux__
 #include <sys/sysmacros.h>
+#endif
 #include <sys/stat.h>
 #include <xf86drm.h>
 #include <drm_fourcc.h>
@@ -1176,6 +1178,8 @@ static void vulkan_device_free(AVHWDeviceContext *ctx)
 
     RELEASE_PROPS(hwctx->enabled_inst_extensions, hwctx->nb_enabled_inst_extensions);
     RELEASE_PROPS(hwctx->enabled_dev_extensions, hwctx->nb_enabled_dev_extensions);
+
+    ff_vk_uninit(&p->vkctx);
 }
 
 static int vulkan_device_create_internal(AVHWDeviceContext *ctx,
@@ -1425,23 +1429,30 @@ static int vulkan_device_init(AVHWDeviceContext *ctx)
     vk->GetPhysicalDeviceQueueFamilyProperties(hwctx->phys_dev, &qf_num, qf);
 
     p->qf_mutex = av_calloc(qf_num, sizeof(*p->qf_mutex));
-    if (!p->qf_mutex)
+    if (!p->qf_mutex) {
+        av_free(qf);
         return AVERROR(ENOMEM);
+    }
     p->nb_tot_qfs = qf_num;
 
     for (uint32_t i = 0; i < qf_num; i++) {
         p->qf_mutex[i] = av_calloc(qf[i].queueCount, sizeof(**p->qf_mutex));
-        if (!p->qf_mutex[i])
+        if (!p->qf_mutex[i]) {
+            av_free(qf);
             return AVERROR(ENOMEM);
+        }
         for (uint32_t j = 0; j < qf[i].queueCount; j++) {
             err = pthread_mutex_init(&p->qf_mutex[i][j], NULL);
             if (err != 0) {
                 av_log(ctx, AV_LOG_ERROR, "pthread_mutex_init failed : %s\n",
                        av_err2str(err));
+                av_free(qf);
                 return AVERROR(err);
             }
         }
     }
+
+    av_free(qf);
 
     graph_index = hwctx->queue_family_index;
     comp_index  = hwctx->queue_family_comp_index;

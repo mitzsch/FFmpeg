@@ -206,7 +206,6 @@ static void loadVTEncSymbols(void){
     GET_SYM(kVTCompressionPropertyKey_MinAllowedFrameQP, "MinAllowedFrameQP");
 }
 
-#define AUTO_PROFILE 0
 #define H264_PROFILE_CONSTRAINED_HIGH (FF_PROFILE_H264_HIGH | FF_PROFILE_H264_CONSTRAINED)
 
 typedef enum VTH264Entropy{
@@ -252,7 +251,7 @@ typedef struct VTEncContext {
     int64_t first_pts;
     int64_t dts_delta;
 
-    int64_t profile;
+    int profile;
     int level;
     int entropy;
     int realtime;
@@ -443,7 +442,7 @@ static int count_nalus(size_t length_code_size,
 }
 
 static CMVideoCodecType get_cm_codec_type(AVCodecContext *avctx,
-                                          int64_t profile,
+                                          int profile,
                                           double alpha_quality)
 {
     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(avctx->pix_fmt == AV_PIX_FMT_VIDEOTOOLBOX ? avctx->sw_pix_fmt : avctx->pix_fmt);
@@ -470,7 +469,7 @@ static CMVideoCodecType get_cm_codec_type(AVCodecContext *avctx,
             return MKBETAG('a','p','4','x'); // kCMVideoCodecType_AppleProRes4444XQ
 
         default:
-            av_log(avctx, AV_LOG_ERROR, "Unknown profile ID: %"PRId64", using auto\n", profile);
+            av_log(avctx, AV_LOG_ERROR, "Unknown profile ID: %d, using auto\n", profile);
         case FF_PROFILE_UNKNOWN:
             if (desc &&
                 ((desc->flags & AV_PIX_FMT_FLAG_ALPHA) ||
@@ -735,9 +734,9 @@ static bool get_vt_h264_profile_level(AVCodecContext *avctx,
                                       CFStringRef    *profile_level_val)
 {
     VTEncContext *vtctx = avctx->priv_data;
-    int64_t profile = vtctx->profile;
+    int profile = vtctx->profile;
 
-    if (profile == AUTO_PROFILE && vtctx->level) {
+    if (profile == FF_PROFILE_UNKNOWN && vtctx->level) {
         //Need to pick a profile if level is not auto-selected.
         profile = vtctx->has_b_frames ? FF_PROFILE_H264_MAIN : FF_PROFILE_H264_BASELINE;
     }
@@ -745,7 +744,7 @@ static bool get_vt_h264_profile_level(AVCodecContext *avctx,
     *profile_level_val = NULL;
 
     switch (profile) {
-        case AUTO_PROFILE:
+        case FF_PROFILE_UNKNOWN:
             return true;
 
         case FF_PROFILE_H264_BASELINE:
@@ -864,12 +863,12 @@ static bool get_vt_hevc_profile_level(AVCodecContext *avctx,
                                       CFStringRef    *profile_level_val)
 {
     VTEncContext *vtctx = avctx->priv_data;
-    int64_t profile = vtctx->profile;
+    int profile = vtctx->profile;
 
     *profile_level_val = NULL;
 
     switch (profile) {
-        case AUTO_PROFILE:
+        case FF_PROFILE_UNKNOWN:
             return true;
         case FF_PROFILE_HEVC_MAIN:
             *profile_level_val =
@@ -1002,132 +1001,20 @@ pbinfo_nomem:
     return AVERROR(ENOMEM);
 }
 
-static int get_cv_color_primaries(AVCodecContext *avctx,
-                                  CFStringRef *primaries)
-{
-    enum AVColorPrimaries pri = avctx->color_primaries;
-    switch (pri) {
-        case AVCOL_PRI_UNSPECIFIED:
-            *primaries = NULL;
-            break;
-
-        case AVCOL_PRI_BT470BG:
-            *primaries = kCVImageBufferColorPrimaries_EBU_3213;
-            break;
-
-        case AVCOL_PRI_SMPTE170M:
-            *primaries = kCVImageBufferColorPrimaries_SMPTE_C;
-            break;
-
-        case AVCOL_PRI_BT709:
-            *primaries = kCVImageBufferColorPrimaries_ITU_R_709_2;
-            break;
-
-        case AVCOL_PRI_BT2020:
-            *primaries = compat_keys.kCVImageBufferColorPrimaries_ITU_R_2020;
-            break;
-
-        default:
-            av_log(avctx, AV_LOG_ERROR, "Color primaries %s is not supported.\n", av_color_primaries_name(pri));
-            *primaries = NULL;
-            return -1;
-    }
-
-    return 0;
-}
-
-static int get_cv_transfer_function(AVCodecContext *avctx,
-                                    CFStringRef *transfer_fnc,
-                                    CFNumberRef *gamma_level)
+static int get_cv_gamma(AVCodecContext *avctx,
+                        CFNumberRef *gamma_level)
 {
     enum AVColorTransferCharacteristic trc = avctx->color_trc;
-    Float32 gamma;
+    Float32 gamma = 0;
     *gamma_level = NULL;
 
-    switch (trc) {
-        case AVCOL_TRC_UNSPECIFIED:
-            *transfer_fnc = NULL;
-            break;
+    if (trc == AVCOL_TRC_GAMMA22)
+        gamma = 2.2;
+    else if (trc == AVCOL_TRC_GAMMA28)
+        gamma = 2.8;
 
-        case AVCOL_TRC_BT709:
-            *transfer_fnc = kCVImageBufferTransferFunction_ITU_R_709_2;
-            break;
-
-        case AVCOL_TRC_SMPTE240M:
-            *transfer_fnc = kCVImageBufferTransferFunction_SMPTE_240M_1995;
-            break;
-
-#if HAVE_KCVIMAGEBUFFERTRANSFERFUNCTION_SMPTE_ST_2084_PQ
-        case AVCOL_TRC_SMPTE2084:
-            *transfer_fnc = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ;
-            break;
-#endif
-#if HAVE_KCVIMAGEBUFFERTRANSFERFUNCTION_LINEAR
-        case AVCOL_TRC_LINEAR:
-            *transfer_fnc = kCVImageBufferTransferFunction_Linear;
-            break;
-#endif
-#if HAVE_KCVIMAGEBUFFERTRANSFERFUNCTION_ITU_R_2100_HLG
-        case AVCOL_TRC_ARIB_STD_B67:
-            *transfer_fnc = kCVImageBufferTransferFunction_ITU_R_2100_HLG;
-            break;
-#endif
-
-        case AVCOL_TRC_GAMMA22:
-            gamma = 2.2;
-            *transfer_fnc = kCVImageBufferTransferFunction_UseGamma;
-            *gamma_level = CFNumberCreate(NULL, kCFNumberFloat32Type, &gamma);
-            break;
-
-        case AVCOL_TRC_GAMMA28:
-            gamma = 2.8;
-            *transfer_fnc = kCVImageBufferTransferFunction_UseGamma;
-            *gamma_level = CFNumberCreate(NULL, kCFNumberFloat32Type, &gamma);
-            break;
-
-        case AVCOL_TRC_BT2020_10:
-        case AVCOL_TRC_BT2020_12:
-            *transfer_fnc = compat_keys.kCVImageBufferTransferFunction_ITU_R_2020;
-            break;
-
-        default:
-            *transfer_fnc = NULL;
-            av_log(avctx, AV_LOG_ERROR, "Transfer function %s is not supported.\n", av_color_transfer_name(trc));
-            return -1;
-    }
-
-    return 0;
-}
-
-static int get_cv_ycbcr_matrix(AVCodecContext *avctx, CFStringRef *matrix) {
-    switch(avctx->colorspace) {
-        case AVCOL_SPC_BT709:
-            *matrix = kCVImageBufferYCbCrMatrix_ITU_R_709_2;
-            break;
-
-        case AVCOL_SPC_UNSPECIFIED:
-        case AVCOL_SPC_RGB:
-            *matrix = NULL;
-            break;
-
-        case AVCOL_SPC_BT470BG:
-        case AVCOL_SPC_SMPTE170M:
-            *matrix = kCVImageBufferYCbCrMatrix_ITU_R_601_4;
-            break;
-
-        case AVCOL_SPC_SMPTE240M:
-            *matrix = kCVImageBufferYCbCrMatrix_SMPTE_240M_1995;
-            break;
-
-        case AVCOL_SPC_BT2020_NCL:
-            *matrix = compat_keys.kCVImageBufferYCbCrMatrix_ITU_R_2020;
-            break;
-
-        default:
-            av_log(avctx, AV_LOG_ERROR, "Color space %s is not supported.\n", av_color_space_name(avctx->colorspace));
-            return -1;
-    }
-
+    if (gamma != 0)
+        *gamma_level = CFNumberCreate(NULL, kCFNumberFloat32Type, &gamma);
     return 0;
 }
 
@@ -1537,17 +1424,6 @@ static int vtenc_create_encoder(AVCodecContext   *avctx,
         }
     }
 
-    // low-latency mode: eliminate frame reordering, follow a one-in-one-out encoding mode
-    if ((avctx->flags & AV_CODEC_FLAG_LOW_DELAY) && avctx->codec_id == AV_CODEC_ID_H264) {
-        status = VTSessionSetProperty(vtctx->session,
-                                      compat_keys.kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
-                                      kCFBooleanTrue);
-
-        if (status) {
-            av_log(avctx, AV_LOG_ERROR, "Error setting low latency property: %d\n", status);
-        }
-    }
-
     if ((avctx->flags & AV_CODEC_FLAG_CLOSED_GOP) != 0) {
         set_encoder_property_or_log(avctx,
                                     compat_keys.kVTCompressionPropertyKey_AllowOpenGOP,
@@ -1691,6 +1567,13 @@ static int vtenc_configure_encoder(AVCodecContext *avctx)
     }
 #endif
 
+    // low-latency mode: eliminate frame reordering, follow a one-in-one-out encoding mode
+    if ((avctx->flags & AV_CODEC_FLAG_LOW_DELAY) && avctx->codec_id == AV_CODEC_ID_H264) {
+        CFDictionarySetValue(enc_info,
+                             compat_keys.kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
+                             kCFBooleanTrue);
+    }
+
     if (avctx->pix_fmt != AV_PIX_FMT_VIDEOTOOLBOX) {
         status = create_cv_pixel_buffer_info(avctx, &pixel_buffer_info);
         if (status)
@@ -1699,9 +1582,10 @@ static int vtenc_configure_encoder(AVCodecContext *avctx)
 
     vtctx->dts_delta = vtctx->has_b_frames ? -1 : 0;
 
-    get_cv_transfer_function(avctx, &vtctx->transfer_function, &gamma_level);
-    get_cv_ycbcr_matrix(avctx, &vtctx->ycbcr_matrix);
-    get_cv_color_primaries(avctx, &vtctx->color_primaries);
+    get_cv_gamma(avctx, &gamma_level);
+    vtctx->transfer_function = av_map_videotoolbox_color_trc_from_av(avctx->color_trc);
+    vtctx->ycbcr_matrix = av_map_videotoolbox_color_matrix_from_av(avctx->colorspace);
+    vtctx->color_primaries = av_map_videotoolbox_color_primaries_from_av(avctx->color_primaries);
 
 
     if (avctx->flags & AV_CODEC_FLAG_GLOBAL_HEADER) {
@@ -1747,6 +1631,9 @@ static av_cold int vtenc_init(AVCodecContext *avctx)
     pthread_mutex_init(&vtctx->lock, NULL);
     pthread_cond_init(&vtctx->cv_sample_sent, NULL);
 
+    // It can happen when user set avctx->profile directly.
+    if (vtctx->profile == FF_PROFILE_UNKNOWN)
+        vtctx->profile = avctx->profile;
     vtctx->session = NULL;
     status = vtenc_configure_encoder(avctx);
     if (status) return status;
@@ -2891,7 +2778,7 @@ static const enum AVPixelFormat prores_pix_fmts[] = {
 
 #define OFFSET(x) offsetof(VTEncContext, x)
 static const AVOption h264_options[] = {
-    { "profile", "Profile", OFFSET(profile), AV_OPT_TYPE_INT64, { .i64 = AUTO_PROFILE }, 0, INT_MAX, VE, "profile" },
+    { "profile", "Profile", OFFSET(profile), AV_OPT_TYPE_INT, { .i64 = FF_PROFILE_UNKNOWN }, FF_PROFILE_UNKNOWN, INT_MAX, VE, "profile" },
     { "baseline",             "Baseline Profile",             0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_H264_BASELINE             }, INT_MIN, INT_MAX, VE, "profile" },
     { "constrained_baseline", "Constrained Baseline Profile", 0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_H264_CONSTRAINED_BASELINE }, INT_MIN, INT_MAX, VE, "profile" },
     { "main",                 "Main Profile",                 0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_H264_MAIN                 }, INT_MIN, INT_MAX, VE, "profile" },
@@ -2948,7 +2835,7 @@ const FFCodec ff_h264_videotoolbox_encoder = {
 };
 
 static const AVOption hevc_options[] = {
-    { "profile", "Profile", OFFSET(profile), AV_OPT_TYPE_INT64, { .i64 = AUTO_PROFILE }, 0, INT_MAX, VE, "profile" },
+    { "profile", "Profile", OFFSET(profile), AV_OPT_TYPE_INT, { .i64 = FF_PROFILE_UNKNOWN }, FF_PROFILE_UNKNOWN, INT_MAX, VE, "profile" },
     { "main",     "Main Profile",     0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_HEVC_MAIN    }, INT_MIN, INT_MAX, VE, "profile" },
     { "main10",   "Main10 Profile",   0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_HEVC_MAIN_10 }, INT_MIN, INT_MAX, VE, "profile" },
 
@@ -2985,7 +2872,7 @@ const FFCodec ff_hevc_videotoolbox_encoder = {
 };
 
 static const AVOption prores_options[] = {
-    { "profile", "Profile", OFFSET(profile), AV_OPT_TYPE_INT64, { .i64 = FF_PROFILE_UNKNOWN }, FF_PROFILE_UNKNOWN, FF_PROFILE_PRORES_XQ, VE, "profile" },
+    { "profile", "Profile", OFFSET(profile), AV_OPT_TYPE_INT, { .i64 = FF_PROFILE_UNKNOWN }, FF_PROFILE_UNKNOWN, FF_PROFILE_PRORES_XQ, VE, "profile" },
     { "auto",     "Automatically determine based on input format", 0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_UNKNOWN },            INT_MIN, INT_MAX, VE, "profile" },
     { "proxy",    "ProRes 422 Proxy",                              0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_PRORES_PROXY },       INT_MIN, INT_MAX, VE, "profile" },
     { "lt",       "ProRes 422 LT",                                 0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_PRORES_LT },          INT_MIN, INT_MAX, VE, "profile" },
