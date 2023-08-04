@@ -47,6 +47,7 @@ typedef struct TCPContext {
 #if !HAVE_WINSOCK2_H
     int tcp_mss;
 #endif /* !HAVE_WINSOCK2_H */
+    char *resolve_hosts;
 } TCPContext;
 
 #define OFFSET(x) offsetof(TCPContext, x)
@@ -64,6 +65,7 @@ static const AVOption options[] = {
 #if !HAVE_WINSOCK2_H
     { "tcp_mss",     "Maximum segment size for outgoing TCP packets",          OFFSET(tcp_mss),     AV_OPT_TYPE_INT, { .i64 = -1 },         -1, INT_MAX, .flags = D|E },
 #endif /* !HAVE_WINSOCK2_H */
+    { "resolve_hosts", "Comma-separated host resolutions, in the form host:ip", OFFSET(resolve_hosts), AV_OPT_TYPE_STRING, { .str = NULL },  0, 0,       .flags = D|E },
     { NULL }
 };
 
@@ -136,6 +138,27 @@ static int customize_fd(void *ctx, int fd, int family)
     return 0;
 }
 
+static int lookup_host(URLContext *h, char *hostname, size_t hostname_size)
+{
+    TCPContext *s = h->priv_data;
+    if (hostname[0]) {
+        size_t hostlen = strlen(hostname);
+        for (const char *addr = s->resolve_hosts; addr; addr = strchr(addr, ','), addr && addr++) {
+            if (!strncmp(addr, hostname, hostlen) && addr[hostlen] == ':') {
+                addr += hostlen + 1;
+                const char *end = strchr(addr, ',');
+                size_t len = end ? end - addr : strlen(addr);
+                if (len >= hostname_size - 1)
+                    return AVERROR(ENOMEM);
+                memcpy(hostname, addr, len);
+                hostname[len] = 0;
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
 /* return non zero if error */
 static int tcp_open(URLContext *h, const char *uri, int flags)
 {
@@ -157,6 +180,10 @@ static int tcp_open(URLContext *h, const char *uri, int flags)
         av_log(h, AV_LOG_ERROR, "Port missing in uri\n");
         return AVERROR(EINVAL);
     }
+
+    if ((ret = lookup_host(h, hostname, sizeof(hostname))) < 0)
+        return ret;
+
     p = strchr(uri, '?');
     if (p) {
         if (av_find_info_tag(buf, sizeof(buf), "listen", p)) {
