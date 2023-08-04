@@ -4,6 +4,13 @@ FFmpeg README
 FFmpeg is a collection of libraries and tools to process multimedia content
 such as audio, video, subtitles and related metadata.
 
+## Branch master-2
+
+* This branch features the "old" trueHD passthrough logic
+* This branch also features a Plex DNS patch
+* This branch will be regularly synced with the upstream FFmpeg code
+
+
 ## Libraries
 
 * `libavcodec` provides implementation of a wider range of codecs.
