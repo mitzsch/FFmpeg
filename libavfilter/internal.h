@@ -26,9 +26,7 @@
 
 #include "libavutil/internal.h"
 #include "avfilter.h"
-#include "formats.h"
 #include "framequeue.h"
-#include "video.h"
 
 typedef struct AVFilterCommand {
     double time;                ///< time expressed in seconds

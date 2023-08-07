@@ -30,6 +30,7 @@
 #include "libavutil/opt.h"
 #include "libavutil/parseutils.h"
 #include "audio.h"
+#include "formats.h"
 #include "video.h"
 #include "avfilter.h"
 #include "filters.h"
@@ -1272,13 +1273,6 @@ static int activate(AVFilterContext *ctx)
     return FFERROR_NOT_READY;
 }
 
-static const AVFilterPad showcwt_inputs[] = {
-    {
-        .name = "default",
-        .type = AVMEDIA_TYPE_AUDIO,
-    },
-};
-
 static const AVFilterPad showcwt_outputs[] = {
     {
         .name         = "default",
@@ -1292,7 +1286,7 @@ const AVFilter ff_avf_showcwt = {
     .description   = NULL_IF_CONFIG_SMALL("Convert input audio to a CWT (Continuous Wavelet Transform) spectrum video output."),
     .uninit        = uninit,
     .priv_size     = sizeof(ShowCWTContext),
-    FILTER_INPUTS(showcwt_inputs),
+    FILTER_INPUTS(ff_audio_default_filterpad),
     FILTER_OUTPUTS(showcwt_outputs),
     FILTER_QUERY_FUNC(query_formats),
     .activate      = activate,
