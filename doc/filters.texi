@@ -30783,7 +30783,7 @@ Set the frequency scale used. Allowed values are:
 
 @table @option
 @item linear
-@item log2
+@item log
 @item bark
 @item mel
 @item erbs
@@ -30814,6 +30814,12 @@ Set the maximum frequency that will be used in output.
 Default is @code{20000} Hz. The real frequency upper limit
 depends on input audio's sample rate and such will be enforced
 on this value when it is set to value greater than Nyquist frequency.
+
+@item imin
+Set the minimum intensity that will be used in output.
+
+@item imax
+Set the maximum intensity that will be used in output.
 
 @item logb
 Set the logarithmic basis for brightness strength when

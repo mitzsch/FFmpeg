@@ -81,8 +81,7 @@ typedef struct ShowCWTContext {
     AVRational frame_rate;
     AVTXContext **fft, **ifft;
     av_tx_fn tx_fn, itx_fn;
-    int fft_in_size, fft_out_size;
-    int ifft_in_size, ifft_out_size;
+    int fft_size, ifft_size;
     int pos;
     int64_t in_pts;
     int64_t old_pts;
@@ -119,6 +118,7 @@ typedef struct ShowCWTContext {
     int intensity_scale;
     int frequency_scale;
     float minimum_frequency, maximum_frequency;
+    float minimum_intensity, maximum_intensity;
     float deviation;
     float bar_ratio;
     int bar_size;
@@ -152,6 +152,8 @@ static const AVOption showcwt_options[] = {
     {  "qdrt",    "qdrt",             0,                       AV_OPT_TYPE_CONST,{.i64=ISCALE_QDRT},   0, 0, FLAGS, "iscale" },
     { "min",  "set minimum frequency", OFFSET(minimum_frequency), AV_OPT_TYPE_FLOAT, {.dbl = 20.},    1, 192000, FLAGS },
     { "max",  "set maximum frequency", OFFSET(maximum_frequency), AV_OPT_TYPE_FLOAT, {.dbl = 20000.}, 1, 192000, FLAGS },
+    { "imin", "set minimum intensity", OFFSET(minimum_intensity), AV_OPT_TYPE_FLOAT, {.dbl = 0.}, 0, 1, FLAGS },
+    { "imax", "set maximum intensity", OFFSET(maximum_intensity), AV_OPT_TYPE_FLOAT, {.dbl = 1.}, 0, 1, FLAGS },
     { "logb", "set logarithmic basis", OFFSET(logarithmic_basis), AV_OPT_TYPE_FLOAT, {.dbl = 0.0001}, 0, 1, FLAGS },
     { "deviation", "set frequency deviation", OFFSET(deviation), AV_OPT_TYPE_FLOAT, {.dbl = 1.}, 0, 100, FLAGS },
     { "pps",  "set pixels per second", OFFSET(pps), AV_OPT_TYPE_INT, {.i64 = 64}, 1, 1024, FLAGS },
@@ -248,13 +250,15 @@ static int query_formats(AVFilterContext *ctx)
     return 0;
 }
 
-static void frequency_band(float *frequency_band,
-                           int frequency_band_count,
-                           float frequency_range,
-                           float frequency_offset,
-                           int frequency_scale, float deviation)
+static float frequency_band(float *frequency_band,
+                            int frequency_band_count,
+                            float frequency_range,
+                            float frequency_offset,
+                            int frequency_scale, float deviation)
 {
-    deviation *= sqrtf(1.f / (4.f * M_PI)); // Heisenberg Gabor Limit
+    float ret = 0.f;
+
+    deviation = sqrtf(deviation / (4.f * M_PI)); // Heisenberg Gabor Limit
     for (int y = 0; y < frequency_band_count; y++) {
         float frequency = frequency_range * (1.f - (float)y / frequency_band_count) + frequency_offset;
         float frequency_derivative = frequency_range / frequency_band_count;
@@ -274,7 +278,7 @@ static void frequency_band(float *frequency_band,
             break;
         case FSCALE_ERBS:
             frequency = 676170.4f / (47.06538f - expf(frequency * 0.08950404f)) - 14678.49f;
-            frequency_derivative *= (frequency * frequency + 14990.4 * frequency + 4577850.f) / 160514.f;
+            frequency_derivative *= (frequency * frequency + 14990.4f * frequency + 4577850.f) / 160514.f;
             break;
         case FSCALE_SQRT:
             frequency = frequency * frequency;
@@ -292,34 +296,44 @@ static void frequency_band(float *frequency_band,
 
         frequency_band[y*2  ] = frequency;
         frequency_band[y*2+1] = frequency_derivative * deviation;
-    }
-}
 
-static float remap_log(float value, int iscale, float log_factor)
-{
-    float ret;
-
-    switch (iscale) {
-    case ISCALE_LINEAR:
-        ret = value * 20.f*expf(log_factor);
-        break;
-    case ISCALE_LOG:
-        value = logf(value) * log_factor;
-
-        ret = 1.f - av_clipf(value, 0.f, 1.f);
-        break;
-    case ISCALE_SQRT:
-        ret = sqrtf(value * 20.f*expf(log_factor));
-        break;
-    case ISCALE_CBRT:
-        ret = cbrtf(value * 20.f*expf(log_factor));
-        break;
-    case ISCALE_QDRT:
-        ret = powf(value * 20.f*expf(log_factor), 0.25f);
-        break;
+        ret = 1.f / (frequency_derivative * deviation);
     }
 
     return ret;
+}
+
+static float remap_log(ShowCWTContext *s, float value, int iscale, float log_factor)
+{
+    const float max = s->maximum_intensity;
+    const float min = s->minimum_intensity;
+    float ret;
+
+    value += min;
+
+    switch (iscale) {
+    case ISCALE_LINEAR:
+        ret = max - expf(value / log_factor);
+        break;
+    case ISCALE_LOG:
+        value = logf(value) * log_factor;
+        ret = max - av_clipf(value, 0.f, 1.f);
+        break;
+    case ISCALE_SQRT:
+        value = max - expf(value / log_factor);
+        ret = sqrtf(value);
+        break;
+    case ISCALE_CBRT:
+        value = max - expf(value / log_factor);
+        ret = cbrtf(value);
+        break;
+    case ISCALE_QDRT:
+        value = max - expf(value / log_factor);
+        ret = powf(value, 0.25f);
+        break;
+    }
+
+    return av_clipf(ret, 0.f, 1.f);
 }
 
 static int run_channel_cwt_prepare(AVFilterContext *ctx, void *arg, int jobnr, int ch)
@@ -343,11 +357,9 @@ static int run_channel_cwt_prepare(AVFilterContext *ctx, void *arg, int jobnr, i
     if (fin && s->hop_index + fin->nb_samples < hop_size)
         return 0;
 
-    memset(src, 0, sizeof(float) * s->fft_in_size);
-    for (int n = 0; n < hop_size; n++) {
+    memset(src, 0, sizeof(float) * s->fft_size);
+    for (int n = 0; n < hop_size; n++)
         src[n+offset].re = cache[n];
-        src[n+offset].im = 0.f;
-    }
 
     s->tx_fn(s->fft[jobnr], dst, src, sizeof(*src));
 
@@ -517,9 +529,9 @@ static int draw(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
                 u = hypotf(src[0].re, src[0].im);
                 v = hypotf(src2[0].re, src2[0].im);
 
-                z  = remap_log(z, iscale, log_factor);
-                u  = remap_log(u, iscale, log_factor);
-                v  = remap_log(v, iscale, log_factor);
+                z  = remap_log(s, z, iscale, log_factor);
+                u  = remap_log(s, u, iscale, log_factor);
+                v  = remap_log(s, v, iscale, log_factor);
 
                 Y  = z;
                 U  = sinf((v - u) * M_PI_2);
@@ -553,7 +565,7 @@ static int draw(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
                     float z;
 
                     z = hypotf(srcn[0].re, srcn[0].im);
-                    z = remap_log(z, iscale, log_factor);
+                    z = remap_log(s, z, iscale, log_factor);
 
                     Y += z * yf;
                     U += z * yf * sinf(2.f * M_PI * (ch * yf + rotation));
@@ -572,7 +584,7 @@ static int draw(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
             break;
         case 2:
             Y = hypotf(src[0].re, src[0].im);
-            Y = remap_log(Y, iscale, log_factor);
+            Y = remap_log(s, Y, iscale, log_factor);
             U = atan2f(src[0].im, src[0].re);
             U = 0.5f + 0.5f * U * Y / M_PI;
             V = 1.f - U;
@@ -597,7 +609,7 @@ static int draw(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
             break;
         case 0:
             Y = hypotf(src[0].re, src[0].im);
-            Y = remap_log(Y, iscale, log_factor);
+            Y = remap_log(s, Y, iscale, log_factor);
 
             dstY[0] = av_clip_uint8(lrintf(Y * 255.f));
             if (dstA)
@@ -685,7 +697,6 @@ static int run_channel_cwt(AVFilterContext *ctx, void *arg, int jobnr, int nb_jo
 static int compute_kernel(AVFilterContext *ctx)
 {
     ShowCWTContext *s = ctx->priv;
-    const float correction = s->input_padding_size / (float)s->input_sample_count;
     const int size = s->input_padding_size;
     const int output_sample_count = s->output_sample_count;
     const int fsize = s->frequency_band_count;
@@ -703,9 +714,9 @@ static int compute_kernel(AVFilterContext *ctx)
     for (int y = 0; y < fsize; y++) {
         AVComplexFloat *kernel = s->kernel[y];
         int start = INT_MIN, stop = INT_MAX;
-        const float frequency = s->frequency_band[y*2] * correction;
+        const float frequency = s->frequency_band[y*2];
         const float deviation = 1.f / (s->frequency_band[y*2+1] *
-                                       output_sample_count * correction);
+                                       output_sample_count);
         const int a = FFMAX(frequency-12.f*sqrtf(1.f/deviation)-0.5f, -size);
         const int b = FFMIN(frequency+12.f*sqrtf(1.f/deviation)-0.5f, size+a);
         const int range = -a;
@@ -807,11 +818,52 @@ static int config_output(AVFilterLink *outlink)
         break;
     }
 
+    switch (s->frequency_scale) {
+    case FSCALE_LOG:
+        minimum_frequency = logf(minimum_frequency) / logf(2.f);
+        maximum_frequency = logf(maximum_frequency) / logf(2.f);
+        break;
+    case FSCALE_BARK:
+        minimum_frequency = 6.f * asinhf(minimum_frequency / 600.f);
+        maximum_frequency = 6.f * asinhf(maximum_frequency / 600.f);
+        break;
+    case FSCALE_MEL:
+        minimum_frequency = 2595.f * log10f(1.f + minimum_frequency / 700.f);
+        maximum_frequency = 2595.f * log10f(1.f + maximum_frequency / 700.f);
+        break;
+    case FSCALE_ERBS:
+        minimum_frequency = 11.17268f * logf(1.f + (46.06538f * minimum_frequency) / (minimum_frequency + 14678.49f));
+        maximum_frequency = 11.17268f * logf(1.f + (46.06538f * maximum_frequency) / (maximum_frequency + 14678.49f));
+        break;
+    case FSCALE_SQRT:
+        minimum_frequency = sqrtf(minimum_frequency);
+        maximum_frequency = sqrtf(maximum_frequency);
+        break;
+    case FSCALE_CBRT:
+        minimum_frequency = cbrtf(minimum_frequency);
+        maximum_frequency = cbrtf(maximum_frequency);
+        break;
+    case FSCALE_QDRT:
+        minimum_frequency = powf(minimum_frequency, 0.25f);
+        maximum_frequency = powf(maximum_frequency, 0.25f);
+        break;
+    }
+
+    s->frequency_band = av_calloc(s->frequency_band_count,
+                                  sizeof(*s->frequency_band) * 2);
+    if (!s->frequency_band)
+        return AVERROR(ENOMEM);
+
+    s->nb_consumed_samples = inlink->sample_rate *
+                             frequency_band(s->frequency_band,
+                                            s->frequency_band_count, maximum_frequency - minimum_frequency,
+                                            minimum_frequency, s->frequency_scale, s->deviation);
+    s->nb_consumed_samples = FFMIN(s->nb_consumed_samples, 65536);
+
     s->nb_threads = FFMIN(s->frequency_band_count, ff_filter_get_nb_threads(ctx));
     s->nb_channels = inlink->ch_layout.nb_channels;
     s->old_pts = AV_NOPTS_VALUE;
     s->eof_pts = AV_NOPTS_VALUE;
-    s->nb_consumed_samples = FFMIN(65536, inlink->sample_rate);
 
     s->input_sample_count = 1 << (32 - ff_clz(s->nb_consumed_samples));
     s->input_padding_size = 1 << (32 - ff_clz(s->input_sample_count));
@@ -825,11 +877,8 @@ static int config_output(AVFilterLink *outlink)
     outlink->h = s->h;
     outlink->sample_aspect_ratio = (AVRational){1,1};
 
-    s->fft_in_size  = FFALIGN(s->input_padding_size, av_cpu_max_align());
-    s->fft_out_size = FFALIGN(s->input_padding_size, av_cpu_max_align());
-
-    s->ifft_in_size  = FFALIGN(s->output_padding_size, av_cpu_max_align());
-    s->ifft_out_size = FFALIGN(s->output_padding_size, av_cpu_max_align());
+    s->fft_size = FFALIGN(s->input_padding_size, av_cpu_max_align());
+    s->ifft_size = FFALIGN(s->output_padding_size, av_cpu_max_align());
 
     s->fft = av_calloc(s->nb_threads, sizeof(*s->fft));
     if (!s->fft)
@@ -851,11 +900,9 @@ static int config_output(AVFilterLink *outlink)
             return ret;
     }
 
-    s->frequency_band = av_calloc(s->frequency_band_count,
-                                  sizeof(*s->frequency_band) * 2);
     s->outpicref = ff_get_video_buffer(outlink, outlink->w, outlink->h);
-    s->fft_in = ff_get_audio_buffer(inlink, s->fft_in_size * 2);
-    s->fft_out = ff_get_audio_buffer(inlink, s->fft_out_size * 2);
+    s->fft_in = ff_get_audio_buffer(inlink, s->fft_size * 2);
+    s->fft_out = ff_get_audio_buffer(inlink, s->fft_size * 2);
     s->dst_x = av_frame_alloc();
     s->src_x = av_frame_alloc();
     s->kernel = av_calloc(s->frequency_band_count, sizeof(*s->kernel));
@@ -870,7 +917,7 @@ static int config_output(AVFilterLink *outlink)
     s->kernel_stop = av_calloc(s->frequency_band_count, sizeof(*s->kernel_stop));
     if (!s->outpicref || !s->fft_in || !s->fft_out || !s->src_x || !s->dst_x || !s->over ||
         !s->ifft_in || !s->ifft_out || !s->kernel_start || !s->kernel_stop || !s->ch_out ||
-        !s->frequency_band || !s->cache || !s->index || !s->bh_out || !s->kernel)
+        !s->cache || !s->index || !s->bh_out || !s->kernel)
         return AVERROR(ENOMEM);
 
     s->ch_out->format     = inlink->format;
@@ -881,28 +928,28 @@ static int config_output(AVFilterLink *outlink)
         return ret;
 
     s->ifft_in->format     = inlink->format;
-    s->ifft_in->nb_samples = s->ifft_in_size * 2;
+    s->ifft_in->nb_samples = s->ifft_size * 2;
     s->ifft_in->ch_layout.nb_channels = s->nb_threads;
     ret = av_frame_get_buffer(s->ifft_in, 0);
     if (ret < 0)
         return ret;
 
     s->ifft_out->format     = inlink->format;
-    s->ifft_out->nb_samples = s->ifft_out_size * 2;
+    s->ifft_out->nb_samples = s->ifft_size * 2;
     s->ifft_out->ch_layout.nb_channels = s->nb_threads;
     ret = av_frame_get_buffer(s->ifft_out, 0);
     if (ret < 0)
         return ret;
 
     s->src_x->format     = inlink->format;
-    s->src_x->nb_samples = s->fft_out_size * 2;
+    s->src_x->nb_samples = s->fft_size * 2;
     s->src_x->ch_layout.nb_channels = s->nb_threads;
     ret = av_frame_get_buffer(s->src_x, 0);
     if (ret < 0)
         return ret;
 
     s->dst_x->format     = inlink->format;
-    s->dst_x->nb_samples = s->fft_out_size * 2;
+    s->dst_x->nb_samples = s->fft_size * 2;
     s->dst_x->ch_layout.nb_channels = s->nb_threads;
     ret = av_frame_get_buffer(s->dst_x, 0);
     if (ret < 0)
@@ -920,46 +967,14 @@ static int config_output(AVFilterLink *outlink)
 
     s->outpicref->color_range = AVCOL_RANGE_JPEG;
 
-    factor = s->input_sample_count / (float)inlink->sample_rate;
-    minimum_frequency *= factor;
-    maximum_frequency *= factor;
-
-    switch (s->frequency_scale) {
-    case FSCALE_LOG:
-        minimum_frequency = logf(minimum_frequency) / logf(2.f);
-        maximum_frequency = logf(maximum_frequency) / logf(2.f);
-        break;
-    case FSCALE_BARK:
-        minimum_frequency = 6.f * asinhf(minimum_frequency / 600.f);
-        maximum_frequency = 6.f * asinhf(maximum_frequency / 600.f);
-        break;
-    case FSCALE_MEL:
-        minimum_frequency = 2595.f * log10f(1.f + minimum_frequency / 700.f);
-        maximum_frequency = 2595.f * log10f(1.f + maximum_frequency / 700.f);
-        break;
-    case FSCALE_ERBS:
-        minimum_frequency = 11.17268f * log(1.f + (46.06538f * minimum_frequency) / (minimum_frequency + 14678.49f));
-        maximum_frequency = 11.17268f * log(1.f + (46.06538f * maximum_frequency) / (maximum_frequency + 14678.49f));
-        break;
-    case FSCALE_SQRT:
-        minimum_frequency = sqrtf(minimum_frequency);
-        maximum_frequency = sqrtf(maximum_frequency);
-        break;
-    case FSCALE_CBRT:
-        minimum_frequency = cbrtf(minimum_frequency);
-        maximum_frequency = cbrtf(maximum_frequency);
-        break;
-    case FSCALE_QDRT:
-        minimum_frequency = powf(minimum_frequency, 0.25f);
-        maximum_frequency = powf(maximum_frequency, 0.25f);
-        break;
+    factor = s->input_padding_size / (float)inlink->sample_rate;
+    for (int n = 0; n < s->frequency_band_count; n++) {
+        s->frequency_band[2*n  ] *= factor;
+        s->frequency_band[2*n+1] *= factor;
     }
 
-    frequency_band(s->frequency_band,
-                   s->frequency_band_count, maximum_frequency - minimum_frequency,
-                   minimum_frequency, s->frequency_scale, s->deviation);
-
     av_log(ctx, AV_LOG_DEBUG, "factor: %f\n", factor);
+    av_log(ctx, AV_LOG_DEBUG, "nb_consumed_samples: %d\n", s->nb_consumed_samples);
     av_log(ctx, AV_LOG_DEBUG, "hop_size: %d\n", s->hop_size);
     av_log(ctx, AV_LOG_DEBUG, "ihop_size: %d\n", s->ihop_size);
     av_log(ctx, AV_LOG_DEBUG, "input_sample_count: %d\n", s->input_sample_count);
