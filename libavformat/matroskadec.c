@@ -824,6 +824,12 @@ static const CodecMime mkv_mime_tags[] = {
     {""                           , AV_CODEC_ID_NONE}
 };
 
+static const char * const matroska_video_stereo_plane[MATROSKA_VIDEO_STEREO_PLANE_COUNT] = {
+    "left",
+    "right",
+    "background",
+};
+
 static const char *const matroska_doctypes[] = { "matroska", "webm" };
 
 /*
@@ -2157,6 +2163,37 @@ static void mkv_stereo_mode_display_mul(int stereo_mode,
     }
 }
 
+static int mkv_stereo3d_conv(AVStream *st, MatroskaVideoStereoModeType stereo_mode)
+{
+    static const struct {
+        char type;
+        char flags;
+    } stereo_mode_conv [] = {
+#define STEREO_MODE_CONV(STEREOMODETYPE, STEREO3DTYPE, FLAGS, WDIV, HDIV, WEBM) \
+    [(STEREOMODETYPE)] = { .type = (STEREO3DTYPE), .flags = (FLAGS) },
+#define IGNORE(STEREOMODETYPE, WDIV, HDIV, WEBM)
+        STEREOMODE_STEREO3D_MAPPING(STEREO_MODE_CONV, IGNORE)
+    };
+    AVStereo3D *stereo;
+    int ret;
+
+    stereo = av_stereo3d_alloc();
+    if (!stereo)
+        return AVERROR(ENOMEM);
+
+    stereo->type  = stereo_mode_conv[stereo_mode].type;
+    stereo->flags = stereo_mode_conv[stereo_mode].flags;
+
+    ret = av_stream_add_side_data(st, AV_PKT_DATA_STEREO3D, (uint8_t *)stereo,
+                                  sizeof(*stereo));
+    if (ret < 0) {
+        av_freep(&stereo);
+        return ret;
+    }
+
+    return 0;
+}
+
 static int mkv_parse_video_color(AVStream *st, const MatroskaTrack *track) {
     const MatroskaTrackVideoColor *color = track->video.color.elem;
     const MatroskaMasteringMeta *mastering_meta;
@@ -2991,7 +3028,7 @@ static int matroska_parse_tracks(AVFormatContext *s)
                 if (planes[j].type >= MATROSKA_VIDEO_STEREO_PLANE_COUNT)
                     continue;
                 snprintf(buf, sizeof(buf), "%s_%d",
-                         ff_matroska_video_stereo_plane[planes[j].type], i);
+                         matroska_video_stereo_plane[planes[j].type], i);
                 for (k=0; k < matroska->tracks.nb_elem; k++)
                     if (planes[j].uid == tracks[k].uid && tracks[k].stream) {
                         av_dict_set(&tracks[k].stream->metadata,
@@ -3001,8 +3038,9 @@ static int matroska_parse_tracks(AVFormatContext *s)
             }
             // add stream level stereo3d side data if it is a supported format
             if (track->video.stereo_mode < MATROSKA_VIDEO_STEREOMODE_TYPE_NB &&
-                track->video.stereo_mode != 10 && track->video.stereo_mode != 12) {
-                int ret = ff_mkv_stereo3d_conv(st, track->video.stereo_mode);
+                track->video.stereo_mode != MATROSKA_VIDEO_STEREOMODE_TYPE_ANAGLYPH_CYAN_RED &&
+                track->video.stereo_mode != MATROSKA_VIDEO_STEREOMODE_TYPE_ANAGLYPH_GREEN_MAG) {
+                int ret = mkv_stereo3d_conv(st, track->video.stereo_mode);
                 if (ret < 0)
                     return ret;
             }

@@ -523,8 +523,6 @@ typedef struct OutputStream {
     /* dts of the last packet sent to the muxing queue, in AV_TIME_BASE_Q */
     int64_t last_mux_dts;
 
-    // the timebase of the packets sent to the muxer
-    AVRational mux_timebase;
     AVRational enc_timebase;
 
     Encoder *enc;
@@ -761,6 +759,9 @@ void fg_free(FilterGraph **pfg);
  */
 int fg_transcode_step(FilterGraph *graph, InputStream **best_ist);
 
+void fg_send_command(FilterGraph *fg, double time, const char *target,
+                     const char *command, const char *arg, int all_filters);
+
 /**
  * Get and encode new output from specified filtergraph, without causing
  * activity.
@@ -823,7 +824,7 @@ int enc_flush(void);
 int of_stream_init(OutputFile *of, OutputStream *ost);
 int of_write_trailer(OutputFile *of);
 int of_open(const OptionsContext *o, const char *filename);
-void of_close(OutputFile **pof);
+void of_free(OutputFile **pof);
 
 void of_enc_stats_close(void);
 
