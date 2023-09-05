@@ -50,9 +50,10 @@ typedef struct OSQContext {
     size_t max_framesize;
     size_t bitstream_size;
 
+    int factor;
     int decorrelate;
     int frame_samples;
-    int64_t nb_samples;
+    uint64_t nb_samples;
 
     int32_t *decode_buffer[2];
 
@@ -97,16 +98,17 @@ static av_cold int osq_init(AVCodecContext *avctx)
     if (avctx->ch_layout.nb_channels > FF_ARRAY_ELEMS(s->decode_buffer))
         return AVERROR_INVALIDDATA;
 
+    s->factor = 1;
     switch (avctx->extradata[2]) {
     case  8: avctx->sample_fmt = AV_SAMPLE_FMT_U8P; break;
     case 16: avctx->sample_fmt = AV_SAMPLE_FMT_S16P; break;
     case 20:
-    case 24:
-    case 28:
-    case 32: avctx->sample_fmt = AV_SAMPLE_FMT_S32P; break;
+    case 24: s->factor = 256;
+             avctx->sample_fmt = AV_SAMPLE_FMT_S32P; break;
     default: return AVERROR_INVALIDDATA;
     }
 
+    avctx->bits_per_raw_sample = avctx->extradata[2];
     s->nb_samples = AV_RL64(avctx->extradata + 16);
     s->frame_samples = AV_RL16(avctx->extradata + 8);
     s->max_framesize = (s->frame_samples * 16 + 1024) * avctx->ch_layout.nb_channels;
@@ -339,7 +341,9 @@ static int do_decode(AVCodecContext *avctx, AVFrame *frame, int decorrelate, int
 static int osq_decode_block(AVCodecContext *avctx, AVFrame *frame)
 {
     const int nb_channels = avctx->ch_layout.nb_channels;
+    const int nb_samples = frame->nb_samples;
     OSQContext *s = avctx->priv_data;
+    const int factor = s->factor;
     int ret, decorrelate, downsample;
     GetBitContext *gb = &s->gb;
 
@@ -365,7 +369,7 @@ static int osq_decode_block(AVCodecContext *avctx, AVFrame *frame)
             uint8_t *dst = (uint8_t *)frame->extended_data[ch];
             int32_t *src = s->decode_buffer[ch] + OFFSET;
 
-            for (int n = 0; n < frame->nb_samples; n++)
+            for (int n = 0; n < nb_samples; n++)
                 dst[n] = av_clip_uint8(src[n] + 0x80);
         }
         break;
@@ -374,7 +378,7 @@ static int osq_decode_block(AVCodecContext *avctx, AVFrame *frame)
             int16_t *dst = (int16_t *)frame->extended_data[ch];
             int32_t *src = s->decode_buffer[ch] + OFFSET;
 
-            for (int n = 0; n < frame->nb_samples; n++)
+            for (int n = 0; n < nb_samples; n++)
                 dst[n] = (int16_t)src[n];
         }
         break;
@@ -383,8 +387,8 @@ static int osq_decode_block(AVCodecContext *avctx, AVFrame *frame)
             int32_t *dst = (int32_t *)frame->extended_data[ch];
             int32_t *src = s->decode_buffer[ch] + OFFSET;
 
-            for (int n = 0; n < frame->nb_samples; n++)
-                dst[n] = src[n];
+            for (int n = 0; n < nb_samples; n++)
+                dst[n] = src[n] * factor;
         }
         break;
     default:
