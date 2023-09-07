@@ -434,10 +434,10 @@ const char *avcodec_get_name(enum AVCodecID id)
 const char *av_get_profile_name(const AVCodec *codec, int profile)
 {
     const AVProfile *p;
-    if (profile == FF_PROFILE_UNKNOWN || !codec->profiles)
+    if (profile == AV_PROFILE_UNKNOWN || !codec->profiles)
         return NULL;
 
-    for (p = codec->profiles; p->profile != FF_PROFILE_UNKNOWN; p++)
+    for (p = codec->profiles; p->profile != AV_PROFILE_UNKNOWN; p++)
         if (p->profile == profile)
             return p->name;
 
@@ -449,10 +449,10 @@ const char *avcodec_profile_name(enum AVCodecID codec_id, int profile)
     const AVCodecDescriptor *desc = avcodec_descriptor_get(codec_id);
     const AVProfile *p;
 
-    if (profile == FF_PROFILE_UNKNOWN || !desc || !desc->profiles)
+    if (profile == AV_PROFILE_UNKNOWN || !desc || !desc->profiles)
         return NULL;
 
-    for (p = desc->profiles; p->profile != FF_PROFILE_UNKNOWN; p++)
+    for (p = desc->profiles; p->profile != AV_PROFILE_UNKNOWN; p++)
         if (p->profile == profile)
             return p->name;
 
@@ -1014,37 +1014,6 @@ AVCPBProperties *av_cpb_properties_alloc(size_t *size)
         *size = sizeof(*props);
 
     props->vbv_delay = UINT64_MAX;
-
-    return props;
-}
-
-AVCPBProperties *ff_add_cpb_side_data(AVCodecContext *avctx)
-{
-    AVPacketSideData *tmp;
-    AVCPBProperties  *props;
-    size_t size;
-    int i;
-
-    for (i = 0; i < avctx->nb_coded_side_data; i++)
-        if (avctx->coded_side_data[i].type == AV_PKT_DATA_CPB_PROPERTIES)
-            return (AVCPBProperties *)avctx->coded_side_data[i].data;
-
-    props = av_cpb_properties_alloc(&size);
-    if (!props)
-        return NULL;
-
-    tmp = av_realloc_array(avctx->coded_side_data, avctx->nb_coded_side_data + 1, sizeof(*tmp));
-    if (!tmp) {
-        av_freep(&props);
-        return NULL;
-    }
-
-    avctx->coded_side_data = tmp;
-    avctx->nb_coded_side_data++;
-
-    avctx->coded_side_data[avctx->nb_coded_side_data - 1].type = AV_PKT_DATA_CPB_PROPERTIES;
-    avctx->coded_side_data[avctx->nb_coded_side_data - 1].data = (uint8_t*)props;
-    avctx->coded_side_data[avctx->nb_coded_side_data - 1].size = size;
 
     return props;
 }
