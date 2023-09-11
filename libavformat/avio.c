@@ -397,10 +397,8 @@ static inline int retry_transfer_wrapper(URLContext *h, uint8_t *buf,
     return len;
 }
 
-int ffurl_read2(void *urlcontext, uint8_t *buf, int size)
+int ffurl_read(URLContext *h, unsigned char *buf, int size)
 {
-    URLContext *h = urlcontext;
-
     if (!(h->flags & AVIO_FLAG_READ))
         return AVERROR(EIO);
     return retry_transfer_wrapper(h, buf, size, 1, h->prot->url_read);
@@ -413,10 +411,8 @@ int ffurl_read_complete(URLContext *h, unsigned char *buf, int size)
     return retry_transfer_wrapper(h, buf, size, size, h->prot->url_read);
 }
 
-int ffurl_write2(void *urlcontext, uint8_t *buf, int size)
+int ffurl_write(URLContext *h, const unsigned char *buf, int size)
 {
-    URLContext *h = urlcontext;
-
     if (!(h->flags & AVIO_FLAG_WRITE))
         return AVERROR(EIO);
     /* avoid sending too big packets */
@@ -428,9 +424,8 @@ int ffurl_write2(void *urlcontext, uint8_t *buf, int size)
                                   h->prot->url_write);
 }
 
-int64_t ffurl_seek2(void *urlcontext, int64_t pos, int whence)
+int64_t ffurl_seek(URLContext *h, int64_t pos, int whence)
 {
-    URLContext *h = urlcontext;
     int64_t ret;
 
     if (!h->prot->url_seek)
@@ -651,10 +646,8 @@ int ffurl_get_multi_file_handle(URLContext *h, int **handles, int *numhandles)
     return h->prot->url_get_multi_file_handle(h, handles, numhandles);
 }
 
-int ffurl_get_short_seek(void *urlcontext)
+int ffurl_get_short_seek(URLContext *h)
 {
-    URLContext *h = urlcontext;
-
     if (!h || !h->prot || !h->prot->url_get_short_seek)
         return AVERROR(ENOSYS);
     return h->prot->url_get_short_seek(h);
