@@ -51,7 +51,6 @@
 #include "internal.h"
 #include "mux.h"
 #include "os_support.h"
-#include "url.h"
 
 typedef enum {
     HLS_START_SEQUENCE_AS_START_NUMBER = 0,
