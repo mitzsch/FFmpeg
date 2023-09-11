@@ -19,10 +19,14 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <string.h>
+
 #include "libavutil/avstring.h"
-#include "avformat.h"
-#include "avio_internal.h"
+#include "libavutil/dict.h"
+#include "libavutil/error.h"
+#include "libavutil/mem.h"
 #include "tee_common.h"
+#include "url.h"
 
 typedef struct ChildContext {
     URLContext *url_context;
