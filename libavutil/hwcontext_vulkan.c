@@ -1778,19 +1778,18 @@ static void vulkan_free_internal(AVVkFrame *f)
     av_freep(&f->internal);
 }
 
-static void vulkan_frame_free(void *opaque, uint8_t *data)
+static void vulkan_frame_free(AVHWFramesContext *hwfc, AVVkFrame *f)
 {
-    AVVkFrame *f = (AVVkFrame *)data;
-    AVHWFramesContext *hwfc = opaque;
     AVVulkanDeviceContext *hwctx = hwfc->device_ctx->hwctx;
     VulkanDevicePriv *p = hwfc->device_ctx->internal->priv;
     FFVulkanFunctions *vk = &p->vkctx.vkfn;
     int nb_images = ff_vk_count_images(f);
 
     VkSemaphoreWaitInfo sem_wait = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-        .pSemaphores = f->sem,
-        .pValues = f->sem_value,
+        .sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+        .flags          = 0x0,
+        .pSemaphores    = f->sem,
+        .pValues        = f->sem_value,
         .semaphoreCount = nb_images,
     };
 
@@ -1805,6 +1804,11 @@ static void vulkan_frame_free(void *opaque, uint8_t *data)
     }
 
     av_free(f);
+}
+
+static void vulkan_frame_free_cb(void *opaque, uint8_t *data)
+{
+    vulkan_frame_free(opaque, (AVVkFrame*)data);
 }
 
 static int alloc_bind_mem(AVHWFramesContext *hwfc, AVVkFrame *f,
@@ -2087,7 +2091,7 @@ static int create_frame(AVHWFramesContext *hwfc, AVVkFrame **frame,
     return 0;
 
 fail:
-    vulkan_frame_free(hwfc, (uint8_t *)f);
+    vulkan_frame_free(hwfc, f);
     return err;
 }
 
@@ -2209,14 +2213,14 @@ static AVBufferRef *vulkan_pool_alloc(void *opaque, size_t size)
         goto fail;
 
     avbuf = av_buffer_create((uint8_t *)f, sizeof(AVVkFrame),
-                             vulkan_frame_free, hwfc, 0);
+                             vulkan_frame_free_cb, hwfc, 0);
     if (!avbuf)
         goto fail;
 
     return avbuf;
 
 fail:
-    vulkan_frame_free(hwfc, (uint8_t *)f);
+    vulkan_frame_free(hwfc, f);
     return NULL;
 }
 
@@ -2357,7 +2361,7 @@ static int vulkan_frames_init(AVHWFramesContext *hwfc)
     if (err)
         return err;
 
-    vulkan_frame_free(hwfc, (uint8_t *)f);
+    vulkan_frame_free(hwfc, f);
 
     /* If user did not specify a pool, hwfc->pool will be set to the internal one
      * in hwcontext.c just after this gets called */
@@ -2404,31 +2408,7 @@ static int vulkan_transfer_get_formats(AVHWFramesContext *hwfc,
 #if CONFIG_LIBDRM
 static void vulkan_unmap_from_drm(AVHWFramesContext *hwfc, HWMapDescriptor *hwmap)
 {
-    AVVkFrame *f = hwmap->priv;
-    AVVulkanDeviceContext *hwctx = hwfc->device_ctx->hwctx;
-    VulkanDevicePriv *p = hwfc->device_ctx->internal->priv;
-    FFVulkanFunctions *vk = &p->vkctx.vkfn;
-    const int nb_images = ff_vk_count_images(f);
-
-    VkSemaphoreWaitInfo wait_info = {
-        .sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-        .flags          = 0x0,
-        .pSemaphores    = f->sem,
-        .pValues        = f->sem_value,
-        .semaphoreCount = nb_images,
-    };
-
-    vk->WaitSemaphores(hwctx->act_dev, &wait_info, UINT64_MAX);
-
-    vulkan_free_internal(f);
-
-    for (int i = 0; i < nb_images; i++) {
-        vk->DestroyImage(hwctx->act_dev,     f->img[i], hwctx->alloc);
-        vk->FreeMemory(hwctx->act_dev,       f->mem[i], hwctx->alloc);
-        vk->DestroySemaphore(hwctx->act_dev, f->sem[i], hwctx->alloc);
-    }
-
-    av_free(f);
+    vulkan_frame_free(hwfc, hwmap->priv);
 }
 
 static const struct {
@@ -2766,7 +2746,7 @@ static int vulkan_map_from_drm(AVHWFramesContext *hwfc, AVFrame *dst,
     return 0;
 
 fail:
-    vulkan_frame_free(hwfc->device_ctx->hwctx, (uint8_t *)f);
+    vulkan_frame_free(hwfc->device_ctx->hwctx, f);
     dst->data[0] = NULL;
     return err;
 }
@@ -3065,7 +3045,6 @@ static int vulkan_transfer_data_from_cuda(AVHWFramesContext *hwfc,
 fail:
     CHECK_CU(cu->cuCtxPopCurrent(&dummy));
     vulkan_free_internal(dst_f);
-    dst_f->internal = NULL;
     av_buffer_unref(&dst->buf[0]);
     return err;
 }
@@ -3642,7 +3621,6 @@ static int vulkan_transfer_data_to_cuda(AVHWFramesContext *hwfc, AVFrame *dst,
 fail:
     CHECK_CU(cu->cuCtxPopCurrent(&dummy));
     vulkan_free_internal(dst_f);
-    dst_f->internal = NULL;
     av_buffer_unref(&dst->buf[0]);
     return err;
 }

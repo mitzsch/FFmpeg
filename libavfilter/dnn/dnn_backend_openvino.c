@@ -68,12 +68,12 @@ typedef struct OVModel{
     ie_core_t *core;
     ie_network_t *network;
     ie_executable_network_t *exe_network;
+    const char *all_input_names;
+    const char *all_output_names;
 #endif
     SafeQueue *request_queue;   // holds OVRequestItem
     Queue *task_queue;          // holds TaskItem
     Queue *lltask_queue;     // holds LastLevelTaskItem
-    const char *all_input_names;
-    const char *all_output_names;
 } OVModel;
 
 // one request for one call to openvino
@@ -210,7 +210,10 @@ static int fill_model_input_ov(OVModel *ov_model, OVRequestItem *request)
 
 #if HAVE_OPENVINO2
     if (!ov_model_is_dynamic(ov_model->ov_model)) {
-        ov_output_const_port_free(ov_model->input_port);
+        if (ov_model->input_port) {
+            ov_output_const_port_free(ov_model->input_port);
+            ov_model->input_port = NULL;
+        }
         status = ov_model_const_input_by_name(ov_model->ov_model, task->input_name, &ov_model->input_port);
         if (status != OK) {
             av_log(ctx, AV_LOG_ERROR, "Failed to get input port shape.\n");
@@ -225,6 +228,7 @@ static int fill_model_input_ov(OVModel *ov_model, OVRequestItem *request)
         status = ov_port_get_element_type(ov_model->input_port, &precision);
         if (status != OK) {
             av_log(ctx, AV_LOG_ERROR, "Failed to get input port data type.\n");
+            ov_shape_free(&input_shape);
             return ov2_map_error(status, NULL);
         }
     } else {
@@ -236,8 +240,10 @@ static int fill_model_input_ov(OVModel *ov_model, OVRequestItem *request)
     input.channels = dims[1];
     input.dt = precision_to_datatype(precision);
     input.data = av_malloc(input.height * input.width * input.channels * get_datatype_size(input.dt));
-    if (!input.data)
+    if (!input.data) {
+        ov_shape_free(&input_shape);
         return AVERROR(ENOMEM);
+    }
     input_data_ptr = input.data;
 #else
     status = ie_infer_request_get_blob(request->infer_request, task->input_name, &input_blob);
@@ -300,6 +306,7 @@ static int fill_model_input_ov(OVModel *ov_model, OVRequestItem *request)
         }
 #if HAVE_OPENVINO2
         status = ov_tensor_create_from_host_ptr(precision, input_shape, input.data, &tensor);
+        ov_shape_free(&input_shape);
         if (status != OK) {
             av_log(ctx, AV_LOG_ERROR, "Failed to create tensor from host prt.\n");
             return ov2_map_error(status, NULL);
@@ -362,12 +369,14 @@ static void infer_completion_callback(void *args)
     status = ov_port_get_element_type(ov_model->output_port, &precision);
     if (status != OK) {
         av_log(ctx, AV_LOG_ERROR, "Failed to get output port data type.\n");
+        ov_shape_free(&output_shape);
         return;
     }
     output.channels = dims[1];
     output.height   = dims[2];
     output.width    = dims[3];
     av_assert0(request->lltask_count <= dims[0]);
+    ov_shape_free(&output_shape);
 #else
     IEStatusCode status;
     dimensions_t dims;
@@ -463,55 +472,65 @@ static void infer_completion_callback(void *args)
 
 static void dnn_free_model_ov(DNNModel **model)
 {
-    if (*model){
-        OVModel *ov_model = (*model)->model;
-        while (ff_safe_queue_size(ov_model->request_queue) != 0) {
-            OVRequestItem *item = ff_safe_queue_pop_front(ov_model->request_queue);
-            if (item && item->infer_request) {
-#if HAVE_OPENVINO2
-                ov_infer_request_free(item->infer_request);
-#else
-                ie_infer_request_free(&item->infer_request);
-#endif
-            }
-            av_freep(&item->lltasks);
-            av_freep(&item);
-        }
-        ff_safe_queue_destroy(ov_model->request_queue);
+    OVModel *ov_model;
 
-        while (ff_queue_size(ov_model->lltask_queue) != 0) {
-            LastLevelTaskItem *item = ff_queue_pop_front(ov_model->lltask_queue);
-            av_freep(&item);
-        }
-        ff_queue_destroy(ov_model->lltask_queue);
+    if (!model || !*model)
+        return;
 
-        while (ff_queue_size(ov_model->task_queue) != 0) {
-            TaskItem *item = ff_queue_pop_front(ov_model->task_queue);
-            av_frame_free(&item->in_frame);
-            av_frame_free(&item->out_frame);
-            av_freep(&item);
-        }
-        ff_queue_destroy(ov_model->task_queue);
+    ov_model = (*model)->model;
+    while (ff_safe_queue_size(ov_model->request_queue) != 0) {
+        OVRequestItem *item = ff_safe_queue_pop_front(ov_model->request_queue);
+        if (item && item->infer_request) {
 #if HAVE_OPENVINO2
-        if (ov_model->preprocess)
-            ov_preprocess_prepostprocessor_free(ov_model->preprocess);
-        if (ov_model->compiled_model)
-            ov_compiled_model_free(ov_model->compiled_model);
-        if (ov_model->ov_model)
-            ov_model_free(ov_model->ov_model);
-        if (ov_model->core)
-            ov_core_free(ov_model->core);
+            ov_infer_request_free(item->infer_request);
 #else
-        if (ov_model->exe_network)
-            ie_exec_network_free(&ov_model->exe_network);
-        if (ov_model->network)
-            ie_network_free(&ov_model->network);
-        if (ov_model->core)
-            ie_core_free(&ov_model->core);
+            ie_infer_request_free(&item->infer_request);
 #endif
-        av_freep(&ov_model);
-        av_freep(model);
+        }
+        av_freep(&item->lltasks);
+        av_freep(&item);
     }
+    ff_safe_queue_destroy(ov_model->request_queue);
+
+    while (ff_queue_size(ov_model->lltask_queue) != 0) {
+        LastLevelTaskItem *item = ff_queue_pop_front(ov_model->lltask_queue);
+        av_freep(&item);
+    }
+    ff_queue_destroy(ov_model->lltask_queue);
+
+    while (ff_queue_size(ov_model->task_queue) != 0) {
+        TaskItem *item = ff_queue_pop_front(ov_model->task_queue);
+        av_frame_free(&item->in_frame);
+        av_frame_free(&item->out_frame);
+        av_freep(&item);
+    }
+    ff_queue_destroy(ov_model->task_queue);
+#if HAVE_OPENVINO2
+    if (ov_model->input_port)
+        ov_output_const_port_free(ov_model->input_port);
+    if (ov_model->output_port)
+        ov_output_const_port_free(ov_model->output_port);
+    if (ov_model->preprocess)
+        ov_preprocess_prepostprocessor_free(ov_model->preprocess);
+    if (ov_model->compiled_model)
+        ov_compiled_model_free(ov_model->compiled_model);
+    if (ov_model->ov_model)
+        ov_model_free(ov_model->ov_model);
+    if (ov_model->core)
+        ov_core_free(ov_model->core);
+#else
+    if (ov_model->exe_network)
+        ie_exec_network_free(&ov_model->exe_network);
+    if (ov_model->network)
+        ie_network_free(&ov_model->network);
+    if (ov_model->core)
+        ie_core_free(&ov_model->core);
+    av_free(ov_model->all_output_names);
+    av_free(ov_model->all_input_names);
+#endif
+    av_opt_free(&ov_model->ctx);
+    av_freep(&ov_model);
+    av_freep(model);
 }
 
 
@@ -605,8 +624,10 @@ static int init_model_ov(OVModel *ov_model, const char *input_name, const char *
     ov_model_free(tmp_ov_model);
 
     //update output_port
-    if (ov_model->output_port)
+    if (ov_model->output_port) {
         ov_output_const_port_free(ov_model->output_port);
+        ov_model->output_port = NULL;
+    }
     status = ov_model_const_output_by_name(ov_model->ov_model, output_name, &ov_model->output_port);
     if (status != OK) {
         av_log(ctx, AV_LOG_ERROR, "Failed to get output port.\n");
@@ -1084,37 +1105,37 @@ static int get_output_ov(void *model, const char *input_name, int input_width, i
             status = ov_partial_shape_create(4, dims, &partial_shape);
             if (status != OK) {
                 av_log(ctx, AV_LOG_ERROR, "Failed create partial shape.\n");
-                goto err;
+                return ov2_map_error(status, NULL);
             }
             status = ov_const_port_get_shape(ov_model->input_port, &input_shape);
             input_shape.dims[2] = input_height;
             input_shape.dims[3] = input_width;
             if (status != OK) {
                 av_log(ctx, AV_LOG_ERROR, "Failed create shape for model input resize.\n");
-                goto err;
+                return ov2_map_error(status, NULL);
             }
 
             status = ov_shape_to_partial_shape(input_shape, &partial_shape);
             if (status != OK) {
                 av_log(ctx, AV_LOG_ERROR, "Failed create partial shape for model input resize.\n");
-                goto err;
+                return ov2_map_error(status, NULL);
             }
 
             status = ov_model_reshape_single_input(ov_model->ov_model, partial_shape);
             if (status != OK) {
                 av_log(ctx, AV_LOG_ERROR, "Failed to reszie model input.\n");
-                goto err;
+                return ov2_map_error(status, NULL);
             }
         } else {
             avpriv_report_missing_feature(ctx, "Do not support dynamic model.");
-            goto err;
+            return AVERROR(ENOTSUP);
         }
     }
 
     status = ov_model_const_output_by_name(ov_model->ov_model, output_name, &ov_model->output_port);
     if (status != OK) {
         av_log(ctx, AV_LOG_ERROR, "Failed to get output port.\n");
-        goto err;
+        return ov2_map_error(status, NULL);
     }
     if (!ov_model->compiled_model) {
 #else
@@ -1207,6 +1228,7 @@ static DNNModel *dnn_load_model_ov(const char *model_filename, DNNFunctionType f
     if (status != OK) {
         goto err;
     }
+    ov_model->core = core;
 
     status = ov_core_read_model(core, model_filename, NULL, &ovmodel);
     if (status != OK) {
@@ -1222,7 +1244,6 @@ static DNNModel *dnn_load_model_ov(const char *model_filename, DNNFunctionType f
         goto err;
     }
     ov_model->ov_model = ovmodel;
-    ov_model->core     = core;
 #else
     ov_model->all_input_names = NULL;
     ov_model->all_output_names = NULL;
@@ -1255,6 +1276,7 @@ static DNNModel *dnn_load_model_ov(const char *model_filename, DNNFunctionType f
             goto err;
         }
         APPEND_STRING(ov_model->all_input_names, node_name)
+        ie_network_name_free(&node_name);
     }
     status = ie_network_get_outputs_number(ov_model->network, &node_count);
     if (status != OK) {
@@ -1268,6 +1290,7 @@ static DNNModel *dnn_load_model_ov(const char *model_filename, DNNFunctionType f
             goto err;
         }
         APPEND_STRING(ov_model->all_output_names, node_name)
+        ie_network_name_free(&node_name);
     }
 #endif
 
