@@ -38,7 +38,7 @@ static void prng_shift(uint32_t *state)
 {
     // Primitive polynomial x^31 + x^3 + 1 (modulo 2)
     uint32_t x = *state;
-    uint8_t feedback = (x >> 2) ^ (x >> 30);
+    uint8_t feedback = 1u ^ (x >> 2) ^ (x >> 30);
     *state = (x << 1) | (feedback & 1u);
 }
 
@@ -110,7 +110,7 @@ static void init_slice(H274FilmGrainDatabase *database, uint8_t h, uint8_t v)
     init_slice_c(database->db[h][v], h, v, database->slice_tmp);
 }
 
-// Computes the average of an 8x8 block, right-shifted by 6
+// Computes the average of an 8x8 block
 static uint16_t avg_8x8_c(const uint8_t *in, int in_stride)
 {
     uint16_t avg[8] = {0}; // summing over an array vectorizes better
@@ -259,11 +259,11 @@ int ff_h274_apply_film_grain(AVFrame *out_frame, const AVFrame *in_frame,
         // only advanced in 16x16 blocks, so use a nested loop
         for (int y = 0; y < height; y += 16) {
             for (int x = 0; x < width; x += 16) {
-                uint16_t y_offset = (seed >> 16) % 52;
-                uint16_t x_offset = (seed & 0xFFFF) % 56;
+                uint16_t x_offset = (seed >> 16) % 52;
+                uint16_t y_offset = (seed & 0xFFFF) % 56;
                 const int invert = (seed & 0x1);
-                y_offset &= 0xFFFC;
-                x_offset &= 0xFFF8;
+                x_offset &= 0xFFFC;
+                y_offset &= 0xFFF8;
                 prng_shift(&seed);
 
                 for (int yy = 0; yy < 16 && y+yy < height; yy += 8) {
