@@ -45,6 +45,7 @@
 #include "avcodec_internal.h"
 #include "bytestream.h"
 #include "bsf.h"
+#include "codec_desc.h"
 #include "codec_internal.h"
 #include "decode.h"
 #include "hwaccel_internal.h"
@@ -536,7 +537,9 @@ static int detect_colorspace(AVCodecContext *avctx, AVFrame *frame)
     if (!profile)
         return AVERROR_INVALIDDATA;
 
-    ret = ff_icc_profile_read_primaries(&avci->icc, profile, &coeffs);
+    ret = ff_icc_profile_sanitize(&avci->icc, profile);
+    if (!ret)
+        ret = ff_icc_profile_read_primaries(&avci->icc, profile, &coeffs);
     if (!ret)
         ret = ff_icc_profile_detect_transfer(&avci->icc, profile, &trc);
     cmsCloseProfile(profile);
