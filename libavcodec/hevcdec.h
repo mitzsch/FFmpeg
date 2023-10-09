@@ -417,10 +417,10 @@ typedef struct HEVCFrame {
 
     AVBufferRef *tab_mvf_buf;
     AVBufferRef *rpl_tab_buf;
-    AVBufferRef *rpl_buf;
+    RefPicListTab *rpl;            ///< RefStruct reference
+    int nb_rpl_elems;
 
-    AVBufferRef *hwaccel_priv_buf;
-    void *hwaccel_picture_private;
+    void *hwaccel_picture_private; ///< RefStruct reference
 
     /**
      * A sequence counter, so that old frames are output first
