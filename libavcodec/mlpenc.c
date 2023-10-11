@@ -38,7 +38,8 @@
 #include "mlp.h"
 #include "lpc.h"
 
-#define MAJOR_HEADER_INTERVAL 16
+#define MIN_HEADER_INTERVAL    8
+#define MAX_HEADER_INTERVAL  128
 
 #define MLP_MIN_LPC_ORDER      1
 #define MLP_MAX_LPC_ORDER      8
@@ -124,9 +125,13 @@ typedef struct MLPEncodeContext {
     AVClass        *class;
     AVCodecContext *avctx;
 
+    int             max_restart_interval;   ///< Max interval of access units in between two major frames.
+    int             min_restart_interval;   ///< Min interval of access units in between two major frames.
+    int             lpc_coeff_precision;
     int             lpc_type;
     int             lpc_passes;
     int             prediction_order;
+    int             max_codebook_search;
 
     int             num_substreams;         ///< Number of substreams contained within this stream.
 
@@ -164,8 +169,6 @@ typedef struct MLPEncodeContext {
 
     unsigned int    one_sample_buffer_size; ///< Number of samples*channel for one access unit.
 
-    unsigned int    max_restart_interval;   ///< Max interval of access units in between two major frames.
-    unsigned int    min_restart_interval;   ///< Min interval of access units in between two major frames.
     unsigned int    restart_intervals;      ///< Number of possible major frame sizes.
 
     uint16_t        output_timing;          ///< Timestamp of current access unit.
@@ -181,9 +184,9 @@ typedef struct MLPEncodeContext {
     uint8_t         ch8_presentation_mod;   ///< channel modifier for TrueHD stream 2
     RestartHeader   restart_header;
 
-    MLPBlock        b[MAJOR_HEADER_INTERVAL + 1];
-    int32_t         lpc_sample_buffer[MAJOR_HEADER_INTERVAL * MAX_BLOCKSIZE];
-    int32_t         filter_state_buffer[NUM_FILTERS][MAX_BLOCKSIZE * MAJOR_HEADER_INTERVAL];
+    MLPBlock        b[MAX_HEADER_INTERVAL + 1];
+    int32_t         lpc_sample_buffer[MAX_HEADER_INTERVAL * MAX_BLOCKSIZE];
+    int32_t         filter_state_buffer[NUM_FILTERS][MAX_BLOCKSIZE * MAX_HEADER_INTERVAL];
 
     unsigned int    major_cur_subblock_index;
     unsigned int    major_filter_state_subblock;
@@ -203,8 +206,6 @@ typedef struct MLPEncodeContext {
 
     const ChannelParams  *prev_channel_params;
     const DecodingParams *prev_decoding_params;
-
-    unsigned int    max_codebook_search;
 
     int             shorten_by;
 
@@ -243,7 +244,7 @@ static int compare_filter_params(const ChannelParams *prev_cp, const ChannelPara
     if (prev->order != fp->order)
         return 1;
 
-    if (!prev->order)
+    if (!fp->order)
         return 0;
 
     if (prev->shift != fp->shift)
@@ -266,7 +267,7 @@ static int compare_matrix_params(MLPEncodeContext *ctx, const MatrixParams *prev
     if (prev->count != mp->count)
         return 1;
 
-    if (!prev->count)
+    if (!mp->count)
         return 0;
 
     for (unsigned int channel = rh->min_channel; channel <= rh->max_channel; channel++)
@@ -452,7 +453,7 @@ static void default_decoding_params(MLPEncodeContext *ctx, DecodingParams *decod
  */
 static int inline number_sbits(int32_t n)
 {
-    return 33 - ff_clz(FFABS(n)|1);
+    return 33 - ff_clz(FFABS(n)|1) - !n;
 }
 
 enum InputBitDepth {
@@ -556,11 +557,8 @@ static av_cold int mlp_encode_init(AVCodecContext *avctx)
     ctx->num_channels = avctx->ch_layout.nb_channels + 2; /* +2 noise channels */
     ctx->one_sample_buffer_size = avctx->frame_size
                                 * ctx->num_channels;
-    /* TODO Let user pass major header interval as parameter. */
-    ctx->max_restart_interval = MAJOR_HEADER_INTERVAL;
 
-    ctx->max_codebook_search = 3;
-    ctx->min_restart_interval = MAJOR_HEADER_INTERVAL;
+    ctx->min_restart_interval = ctx->max_restart_interval;
     ctx->restart_intervals = ctx->max_restart_interval / ctx->min_restart_interval;
 
     size = ctx->one_sample_buffer_size * ctx->max_restart_interval;
@@ -645,7 +643,7 @@ static av_cold int mlp_encode_init(AVCodecContext *avctx)
     /* FIXME: this works for 1 and 2 channels, but check for more */
     rh->max_matrix_channel = rh->max_channel;
 
-    ctx->number_of_samples = avctx->frame_size * MAJOR_HEADER_INTERVAL;
+    ctx->number_of_samples = avctx->frame_size * ctx->max_restart_interval;
 
     if ((ret = ff_lpc_init(&ctx->lpc_ctx, ctx->number_of_samples,
                            MLP_MAX_LPC_ORDER, ctx->lpc_type)) < 0)
@@ -1296,7 +1294,7 @@ static void set_filter_params(MLPEncodeContext *ctx,
 
         order = ff_lpc_calc_coefs(&ctx->lpc_ctx, ctx->lpc_sample_buffer,
                                   ctx->number_of_samples, MLP_MIN_LPC_ORDER,
-                                  max_order, 11, coefs, shift, ctx->lpc_type, ctx->lpc_passes,
+                                  max_order, ctx->lpc_coeff_precision, coefs, shift, ctx->lpc_type, ctx->lpc_passes,
                                   ctx->prediction_order, MLP_MIN_LPC_SHIFT,
                                   MLP_MAX_LPC_SHIFT, MLP_MIN_LPC_SHIFT);
 
@@ -1802,7 +1800,7 @@ static void rematrix_channels(MLPEncodeContext *ctx)
  ****************************************************************************/
 
 typedef struct PathCounter {
-    char    path[MAJOR_HEADER_INTERVAL + 2];
+    char    path[MAX_HEADER_INTERVAL + 2];
     int     cur_idx;
     uint32_t bitcount;
 } PathCounter;
@@ -1950,7 +1948,7 @@ static void set_major_params(MLPEncodeContext *ctx)
     ctx->prev_decoding_params = restart_decoding_params;
     ctx->prev_channel_params = restart_channel_params;
 
-    for (unsigned int index = 0; index < MAJOR_HEADER_INTERVAL + 1; index++) {
+    for (unsigned int index = 0; index < MAX_HEADER_INTERVAL + 1; index++) {
         ctx->cur_decoding_params = &ctx->b[index].major_decoding_params;
         ctx->cur_channel_params = ctx->b[index].major_channel_params;
 
@@ -2162,10 +2160,13 @@ static av_cold int mlp_encode_close(AVCodecContext *avctx)
 #define FLAGS AV_OPT_FLAG_ENCODING_PARAM | AV_OPT_FLAG_AUDIO_PARAM
 #define OFFSET(x) offsetof(MLPEncodeContext, x)
 static const AVOption mlp_options[] = {
+{ "max_interval", "Max number of frames between each new header", OFFSET(max_restart_interval),  AV_OPT_TYPE_INT, {.i64 = 16 }, MIN_HEADER_INTERVAL, MAX_HEADER_INTERVAL, FLAGS },
+{ "lpc_coeff_precision", "LPC coefficient precision", OFFSET(lpc_coeff_precision), AV_OPT_TYPE_INT, {.i64 = 15 }, 0, 15, FLAGS },
 { "lpc_type", "LPC algorithm", OFFSET(lpc_type), AV_OPT_TYPE_INT, {.i64 = FF_LPC_TYPE_LEVINSON }, FF_LPC_TYPE_LEVINSON, FF_LPC_TYPE_CHOLESKY, FLAGS, "lpc_type" },
 { "levinson", NULL, 0, AV_OPT_TYPE_CONST, {.i64 = FF_LPC_TYPE_LEVINSON }, 0, 0, FLAGS, "lpc_type" },
 { "cholesky", NULL, 0, AV_OPT_TYPE_CONST, {.i64 = FF_LPC_TYPE_CHOLESKY }, 0, 0, FLAGS, "lpc_type" },
 { "lpc_passes", "Number of passes to use for Cholesky factorization during LPC analysis", OFFSET(lpc_passes),  AV_OPT_TYPE_INT, {.i64 = 2 }, 1, INT_MAX, FLAGS },
+{ "codebook_search", "Max number of codebook searches", OFFSET(max_codebook_search),  AV_OPT_TYPE_INT, {.i64 = 3 }, 1, 100, FLAGS },
 { "prediction_order", "Search method for selecting prediction order", OFFSET(prediction_order), AV_OPT_TYPE_INT, {.i64 = ORDER_METHOD_EST }, ORDER_METHOD_EST, ORDER_METHOD_SEARCH, FLAGS, "predm" },
 { "estimation", NULL, 0, AV_OPT_TYPE_CONST, {.i64 = ORDER_METHOD_EST },    0, 0, FLAGS, "predm" },
 { "search",     NULL, 0, AV_OPT_TYPE_CONST, {.i64 = ORDER_METHOD_SEARCH }, 0, 0, FLAGS, "predm" },

@@ -58,6 +58,7 @@
 #define FFMPEG_OPT_ADRIFT_THRESHOLD 1
 #define FFMPEG_OPT_ENC_TIME_BASE_NUM 1
 #define FFMPEG_OPT_TOP 1
+#define FFMPEG_OPT_FORCE_KF_SOURCE_NO_DROP 1
 
 enum VideoSyncMethod {
     VSYNC_AUTO = -1,
@@ -301,6 +302,9 @@ typedef struct OutputFilter {
 
     /* pts of the last frame received from this filter, in AV_TIME_BASE_Q */
     int64_t last_pts;
+
+    uint64_t nb_frames_dup;
+    uint64_t nb_frames_drop;
 } OutputFilter;
 
 typedef struct FilterGraph {
@@ -484,7 +488,9 @@ typedef enum {
 
 enum {
     KF_FORCE_SOURCE         = 1,
+#if FFMPEG_OPT_FORCE_KF_SOURCE_NO_DROP
     KF_FORCE_SOURCE_NO_DROP = 2,
+#endif
 };
 
 typedef struct KeyframeForceCtx {
@@ -533,10 +539,6 @@ typedef struct OutputStream {
     Encoder *enc;
     AVCodecContext *enc_ctx;
 
-    uint64_t nb_frames_dup;
-    uint64_t nb_frames_drop;
-    int64_t last_dropped;
-
     /* video only */
     AVRational frame_rate;
     AVRational max_frame_rate;
@@ -582,8 +584,6 @@ typedef struct OutputStream {
     // The encoder and the bitstream filters have been initialized and the stream
     // parameters are set in the AVStream.
     int initialized;
-
-    int inputs_done;
 
     const char *attachment_filename;
 
@@ -817,7 +817,7 @@ int dec_packet(InputStream *ist, const AVPacket *pkt, int no_eof);
 int enc_alloc(Encoder **penc, const AVCodec *codec);
 void enc_free(Encoder **penc);
 
-int enc_open(OutputStream *ost, AVFrame *frame);
+int enc_open(OutputStream *ost, const AVFrame *frame);
 int enc_subtitle(OutputFile *of, OutputStream *ost, const AVSubtitle *sub);
 int enc_frame(OutputStream *ost, AVFrame *frame);
 int enc_flush(void);
