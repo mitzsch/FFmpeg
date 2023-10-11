@@ -536,7 +536,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
             av_bprintf(&buf_script, "stream_%d_%d_q=%.1f\n",
                        ost->file_index, ost->index, q);
         }
-        if (!vid && ost->type == AVMEDIA_TYPE_VIDEO) {
+        if (!vid && ost->type == AVMEDIA_TYPE_VIDEO && ost->filter) {
             float fps;
             uint64_t frame_number = atomic_load(&ost->packets_written);
 
@@ -550,8 +550,8 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
             if (is_last_report)
                 av_bprintf(&buf, "L");
 
-            nb_frames_dup  = ost->nb_frames_dup;
-            nb_frames_drop = ost->nb_frames_drop;
+            nb_frames_dup  = ost->filter->nb_frames_dup;
+            nb_frames_drop = ost->filter->nb_frames_drop;
 
             vid = 1;
         }
@@ -566,9 +566,6 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
                     pts -= copy_ts_first_pts;
             }
         }
-
-        if (is_last_report)
-            nb_frames_drop += ost->last_dropped;
     }
 
     us    = FFABS64U(pts) % AV_TIME_BASE;
@@ -944,7 +941,7 @@ static int choose_output(OutputStream **post)
                    INT64_MIN : ost->last_mux_dts;
         }
 
-        if (!ost->initialized && !ost->inputs_done && !ost->finished) {
+        if (!ost->initialized && !ost->finished) {
             ost_min = ost;
             break;
         }
