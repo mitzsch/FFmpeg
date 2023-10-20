@@ -3520,7 +3520,7 @@ mp4_muxer_select="mov_muxer"
 mpegts_demuxer_select="iso_media"
 mpegts_muxer_select="ac3_parser adts_muxer latm_muxer h264_mp4toannexb_bsf hevc_mp4toannexb_bsf"
 mpegtsraw_demuxer_select="mpegts_demuxer"
-mxf_muxer_select="pcm_rechunk_bsf"
+mxf_muxer_select="pcm_rechunk_bsf rangecoder"
 mxf_d10_muxer_select="mxf_muxer"
 mxf_opatom_muxer_select="mxf_muxer"
 nut_muxer_select="riffenc"
@@ -6719,7 +6719,7 @@ enabled libilbc           && require libilbc ilbc.h WebRtcIlbcfix_InitDecode -li
 enabled libjxl            && require_pkg_config libjxl "libjxl >= 0.7.0" jxl/decode.h JxlDecoderVersion &&
                              require_pkg_config libjxl_threads "libjxl_threads >= 0.7.0" jxl/thread_parallel_runner.h JxlThreadParallelRunner
 enabled libklvanc         && require libklvanc libklvanc/vanc.h klvanc_context_create -lklvanc
-enabled libkvazaar        && require_pkg_config libkvazaar "kvazaar >= 0.8.1" kvazaar.h kvz_api_get
+enabled libkvazaar        && require_pkg_config libkvazaar "kvazaar >= 2.0.0" kvazaar.h kvz_api_get
 enabled liblensfun        && require_pkg_config liblensfun lensfun lensfun.h lf_db_new
 
 if enabled libmfx && enabled libvpl; then
@@ -6740,8 +6740,7 @@ elif enabled libmfx; then
       { require libmfx "mfxvideo.h mfxdefs.h" MFXInit "-llibmfx $advapi32_extralibs" &&
         { test_cpp_condition mfxdefs.h "MFX_VERSION >= 1028 && MFX_VERSION < 2000" || die "ERROR: libmfx version must be >= 1.28 and < 2.0"; }  &&
         warn "using libmfx without pkg-config"; } } &&
-    warn "build FFmpeg against libmfx 1.x, obsolete features of libmfx such as OPAQUE memory,\n"\
-         "multi-frame encode, user plugins and LA_EXT rate control mode are enabled"
+    warn "libmfx is deprecated. Please run configure with --enable-libvpl to use libvpl instead."
 elif enabled libvpl; then
 # Consider pkg-config only. The name of libmfx is still passed to check_pkg_config function for --enable-libvpl option
 # because QSV has dependency on libmfx, we can use the same dependency if using libmfx in this check. The package name
@@ -7153,6 +7152,10 @@ enabled crystalhd && check_lib crystalhd "stdint.h libcrystalhd/libcrystalhd_if.
 if enabled vulkan; then
     check_pkg_config_header_only vulkan "vulkan >= 1.3.255" "vulkan/vulkan.h" "defined VK_VERSION_1_3" ||
         check_cpp_condition vulkan "vulkan/vulkan.h" "defined(VK_VERSION_1_4) || (defined(VK_VERSION_1_3) && VK_HEADER_VERSION >= 255)"
+fi
+
+if disabled vulkan; then
+    disable libglslang libshaderc spirv_compiler
 fi
 
 if enabled x86; then
