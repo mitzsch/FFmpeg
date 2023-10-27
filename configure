@@ -2202,7 +2202,6 @@ HAVE_LIST_PUB="
 
 HEADERS_LIST="
     arpa_inet_h
-    asm_hwcap_h
     asm_types_h
     cdio_paranoia_h
     cdio_paranoia_paranoia_h
@@ -6453,7 +6452,6 @@ check_headers io.h
 enabled libdrm &&
     check_headers linux/dma-buf.h
 
-check_headers asm/hwcap.h
 check_headers linux/perf_event.h
 check_headers libcrystalhd/libcrystalhd_if.h
 check_headers malloc.h
@@ -6786,7 +6784,7 @@ enabled libpulse          && require_pkg_config libpulse libpulse pulse/pulseaud
 enabled librabbitmq       && require_pkg_config librabbitmq "librabbitmq >= 0.7.1" amqp.h amqp_new_connection
 enabled librav1e          && require_pkg_config librav1e "rav1e >= 0.5.0" rav1e.h rav1e_context_new
 enabled librist           && require_pkg_config librist "librist >= 0.2.7" librist/librist.h rist_receiver_create
-enabled librsvg           && require_pkg_config librsvg librsvg-2.0 librsvg-2.0/librsvg/rsvg.h rsvg_handle_render_cairo
+enabled librsvg           && require_pkg_config librsvg librsvg-2.0 librsvg-2.0/librsvg/rsvg.h rsvg_handle_new_from_data
 enabled librtmp           && require_pkg_config librtmp librtmp librtmp/rtmp.h RTMP_Socket
 enabled librubberband     && require_pkg_config librubberband "rubberband >= 1.8.1" rubberband/rubberband-c.h rubberband_new -lstdc++ && append librubberband_extralibs "-lstdc++"
 enabled libshaderc        && require_pkg_config spirv_compiler "shaderc >= 2019.1" shaderc/shaderc.h shaderc_compiler_initialize

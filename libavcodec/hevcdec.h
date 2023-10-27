@@ -413,7 +413,6 @@ typedef struct HEVCFrame {
     RefPicListTab **rpl_tab;
     int ctb_count;
     int poc;
-    struct HEVCFrame *collocated_ref;
 
     AVBufferRef *tab_mvf_buf;
     AVBufferRef *rpl_tab_buf;
@@ -529,6 +528,7 @@ typedef struct HEVCContext {
     enum HEVCNALUnitType nal_unit_type;
     int temporal_id;  ///< temporal_id_plus1 - 1
     HEVCFrame *ref;
+    HEVCFrame *collocated_ref;
     HEVCFrame DPB[32];
     int poc;
     int pocTid0;
@@ -690,7 +690,7 @@ int ff_hevc_output_frame(HEVCContext *s, AVFrame *frame, int flush);
 
 void ff_hevc_bump_frame(HEVCContext *s);
 
-void ff_hevc_unref_frame(HEVCContext *s, HEVCFrame *frame, int flags);
+void ff_hevc_unref_frame(HEVCFrame *frame, int flags);
 
 void ff_hevc_set_neighbour_available(HEVCLocalContext *lc, int x0, int y0,
                                      int nPbW, int nPbH);
