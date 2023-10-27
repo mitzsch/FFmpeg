@@ -30,7 +30,7 @@
 #include "refstruct.h"
 #include "threadframe.h"
 
-void ff_hevc_unref_frame(HEVCContext *s, HEVCFrame *frame, int flags)
+void ff_hevc_unref_frame(HEVCFrame *frame, int flags)
 {
     /* frame->frame can be NULL if context init failed */
     if (!frame->frame || !frame->frame->buf[0])
@@ -38,8 +38,8 @@ void ff_hevc_unref_frame(HEVCContext *s, HEVCFrame *frame, int flags)
 
     frame->flags &= ~flags;
     if (!frame->flags) {
-        ff_thread_release_ext_buffer(s->avctx, &frame->tf);
-        ff_thread_release_buffer(s->avctx, frame->frame_grain);
+        ff_thread_release_ext_buffer(&frame->tf);
+        av_frame_unref(frame->frame_grain);
         frame->needs_fg = 0;
 
         av_buffer_unref(&frame->tab_mvf_buf);
@@ -50,8 +50,6 @@ void ff_hevc_unref_frame(HEVCContext *s, HEVCFrame *frame, int flags)
         av_buffer_unref(&frame->rpl_tab_buf);
         frame->rpl_tab    = NULL;
         frame->refPicList = NULL;
-
-        frame->collocated_ref = NULL;
 
         ff_refstruct_unref(&frame->hwaccel_picture_private);
     }
@@ -71,7 +69,7 @@ void ff_hevc_clear_refs(HEVCContext *s)
 {
     int i;
     for (i = 0; i < FF_ARRAY_ELEMS(s->DPB); i++)
-        ff_hevc_unref_frame(s, &s->DPB[i],
+        ff_hevc_unref_frame(&s->DPB[i],
                             HEVC_FRAME_FLAG_SHORT_REF |
                             HEVC_FRAME_FLAG_LONG_REF);
 }
@@ -80,7 +78,7 @@ void ff_hevc_flush_dpb(HEVCContext *s)
 {
     int i;
     for (i = 0; i < FF_ARRAY_ELEMS(s->DPB); i++)
-        ff_hevc_unref_frame(s, &s->DPB[i], ~0);
+        ff_hevc_unref_frame(&s->DPB[i], ~0);
 }
 
 static HEVCFrame *alloc_frame(HEVCContext *s)
@@ -126,7 +124,7 @@ static HEVCFrame *alloc_frame(HEVCContext *s)
 
         return frame;
 fail:
-        ff_hevc_unref_frame(s, frame, ~0);
+        ff_hevc_unref_frame(frame, ~0);
         return NULL;
     }
     av_log(s->avctx, AV_LOG_ERROR, "Error allocating frame, DPB full.\n");
@@ -156,6 +154,7 @@ int ff_hevc_set_new_ref(HEVCContext *s, AVFrame **frame, int poc)
 
     *frame = ref->frame;
     s->ref = ref;
+    s->collocated_ref = NULL;
 
     if (s->sh.pic_output_flag)
         ref->flags = HEVC_FRAME_FLAG_OUTPUT | HEVC_FRAME_FLAG_SHORT_REF;
@@ -177,7 +176,7 @@ static void unref_missing_refs(HEVCContext *s)
     for (int i = 0; i < FF_ARRAY_ELEMS(s->DPB); i++) {
          HEVCFrame *frame = &s->DPB[i];
          if (frame->sequence == HEVC_SEQUENCE_COUNTER_INVALID) {
-             ff_hevc_unref_frame(s, frame, ~0);
+             ff_hevc_unref_frame(frame, ~0);
          }
     }
 }
@@ -191,7 +190,7 @@ int ff_hevc_output_frame(HEVCContext *s, AVFrame *out, int flush)
             if ((frame->flags & mask) == HEVC_FRAME_FLAG_OUTPUT &&
                 frame->sequence != s->seq_decode) {
                 if (s->sh.no_output_of_prior_pics_flag == 1)
-                    ff_hevc_unref_frame(s, frame, HEVC_FRAME_FLAG_OUTPUT);
+                    ff_hevc_unref_frame(frame, HEVC_FRAME_FLAG_OUTPUT);
                 else
                     frame->flags |= HEVC_FRAME_FLAG_BUMPING;
             }
@@ -224,9 +223,9 @@ int ff_hevc_output_frame(HEVCContext *s, AVFrame *out, int flush)
 
             ret = av_frame_ref(out, frame->needs_fg ? frame->frame_grain : frame->frame);
             if (frame->flags & HEVC_FRAME_FLAG_BUMPING)
-                ff_hevc_unref_frame(s, frame, HEVC_FRAME_FLAG_OUTPUT | HEVC_FRAME_FLAG_BUMPING);
+                ff_hevc_unref_frame(frame, HEVC_FRAME_FLAG_OUTPUT | HEVC_FRAME_FLAG_BUMPING);
             else
-                ff_hevc_unref_frame(s, frame, HEVC_FRAME_FLAG_OUTPUT);
+                ff_hevc_unref_frame(frame, HEVC_FRAME_FLAG_OUTPUT);
             if (ret < 0)
                 return ret;
 
@@ -387,7 +386,7 @@ int ff_hevc_slice_rpl(HEVCContext *s)
 
         if (sh->collocated_list == list_idx &&
             sh->collocated_ref_idx < rpl->nb_refs)
-            s->ref->collocated_ref = rpl->ref[sh->collocated_ref_idx];
+            s->collocated_ref = rpl->ref[sh->collocated_ref_idx];
     }
 
     return 0;
@@ -532,7 +531,7 @@ int ff_hevc_frame_rps(HEVCContext *s)
 fail:
     /* release any frames that are now unused */
     for (i = 0; i < FF_ARRAY_ELEMS(s->DPB); i++)
-        ff_hevc_unref_frame(s, &s->DPB[i], 0);
+        ff_hevc_unref_frame(&s->DPB[i], 0);
 
     return ret;
 }
