@@ -18,6 +18,8 @@ OBJS-$(CONFIG_G722DSP) += riscv/g722dsp_init.o
 RVV-OBJS-$(CONFIG_G722DSP) += riscv/g722dsp_rvv.o
 OBJS-$(CONFIG_H264CHROMA) += riscv/h264_chroma_init_riscv.o
 RVV-OBJS-$(CONFIG_H264CHROMA) += riscv/h264_mc_chroma.o
+OBJS-$(CONFIG_HUFFYUV_DECODER) += riscv/huffyuvdsp_init.o
+RVV-OBJS-$(CONFIG_HUFFYUV_DECODER) += riscv/huffyuvdsp_rvv.o
 OBJS-$(CONFIG_IDCTDSP) += riscv/idctdsp_init.o
 RVV-OBJS-$(CONFIG_IDCTDSP) += riscv/idctdsp_rvv.o
 OBJS-$(CONFIG_OPUS_DECODER) += riscv/opusdsp_init.o
@@ -25,5 +27,7 @@ RVV-OBJS-$(CONFIG_OPUS_DECODER) += riscv/opusdsp_rvv.o
 OBJS-$(CONFIG_PIXBLOCKDSP) += riscv/pixblockdsp_init.o \
                               riscv/pixblockdsp_rvi.o
 RVV-OBJS-$(CONFIG_PIXBLOCKDSP) += riscv/pixblockdsp_rvv.o
+OBJS-$(CONFIG_UTVIDEO_DECODER) += riscv/utvideodsp_init.o
+RVV-OBJS-$(CONFIG_UTVIDEO_DECODER) += riscv/utvideodsp_rvv.o
 OBJS-$(CONFIG_VORBIS_DECODER) += riscv/vorbisdsp_init.o
 RVV-OBJS-$(CONFIG_VORBIS_DECODER) += riscv/vorbisdsp_rvv.o

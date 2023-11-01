@@ -1,6 +1,5 @@
 /*
- * MSMPEG4 decoder header
- * copyright (c) 2007 Aurelien Jacobs <aurel@gnuage.org>
+ * Copyright © 2023 Rémi Denis-Courmont.
  *
  * This file is part of FFmpeg.
  *
@@ -19,23 +18,20 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVCODEC_MSMPEG4DEC_H
-#define AVCODEC_MSMPEG4DEC_H
+#include "libavutil/riscv/asm.S"
 
-#include "avcodec.h"
-#include "mpegvideo.h"
+func ff_add_int16_rvv, zve32x
+1:
+        vsetvli t0, a3, e16, m8, ta, ma
+        vle16.v v16, (a0)
+        sub     a3, a3, t0
+        vle16.v v24, (a1)
+        sh1add  a1, t0, a1
+        vadd.vv v16, v16, v24
+        vand.vx v16, v16, a2
+        vse16.v v16, (a0)
+        sh1add  a0, t0, a0
+        bnez    a3, 1b
 
-#define INTER_INTRA_VLC_BITS 3
-#define MB_NON_INTRA_VLC_BITS 9
-
-extern const VLCElem *ff_mb_non_intra_vlc[4];
-extern VLCElem ff_inter_intra_vlc[8];
-
-int ff_msmpeg4_decode_init(AVCodecContext *avctx);
-int ff_msmpeg4_decode_picture_header(MpegEncContext *s);
-int ff_msmpeg4_decode_ext_header(MpegEncContext *s, int buf_size);
-void ff_msmpeg4_decode_motion(MpegEncContext * s, int *mx_ptr, int *my_ptr);
-int ff_msmpeg4_decode_block(MpegEncContext * s, int16_t * block,
-                            int n, int coded, const uint8_t *scan_table);
-
-#endif
+        ret
+endfunc

@@ -1,6 +1,5 @@
 /*
- * MSMPEG4 decoder header
- * copyright (c) 2007 Aurelien Jacobs <aurel@gnuage.org>
+ * Copyright © 2023 Rémi Denis-Courmont.
  *
  * This file is part of FFmpeg.
  *
@@ -19,23 +18,20 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVCODEC_MSMPEG4DEC_H
-#define AVCODEC_MSMPEG4DEC_H
+#include "config.h"
+#include "libavutil/attributes.h"
+#include "libavutil/cpu.h"
+#include "libavcodec/huffyuvdsp.h"
 
-#include "avcodec.h"
-#include "mpegvideo.h"
+void ff_add_int16_rvv(uint16_t *dst, const uint16_t *src, unsigned m, int w);
 
-#define INTER_INTRA_VLC_BITS 3
-#define MB_NON_INTRA_VLC_BITS 9
+av_cold void ff_huffyuvdsp_init_riscv(HuffYUVDSPContext *c,
+                                      enum AVPixelFormat pix_fmt)
+{
+#if HAVE_RVV
+    int flags = av_get_cpu_flags();
 
-extern const VLCElem *ff_mb_non_intra_vlc[4];
-extern VLCElem ff_inter_intra_vlc[8];
-
-int ff_msmpeg4_decode_init(AVCodecContext *avctx);
-int ff_msmpeg4_decode_picture_header(MpegEncContext *s);
-int ff_msmpeg4_decode_ext_header(MpegEncContext *s, int buf_size);
-void ff_msmpeg4_decode_motion(MpegEncContext * s, int *mx_ptr, int *my_ptr);
-int ff_msmpeg4_decode_block(MpegEncContext * s, int16_t * block,
-                            int n, int coded, const uint8_t *scan_table);
-
+    if ((flags & AV_CPU_FLAG_RVV_I32) && (flags & AV_CPU_FLAG_RVB_ADDR))
+        c->add_int16 = ff_add_int16_rvv;
 #endif
+}
