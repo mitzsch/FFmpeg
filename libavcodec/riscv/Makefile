@@ -1,5 +1,5 @@
-OBJS-$(CONFIG_AAC_DECODER) += riscv/aacpsdsp_init.o
-RVV-OBJS-$(CONFIG_AAC_DECODER) += riscv/aacpsdsp_rvv.o
+OBJS-$(CONFIG_AAC_DECODER) += riscv/aacpsdsp_init.o riscv/sbrdsp_init.o
+RVV-OBJS-$(CONFIG_AAC_DECODER) += riscv/aacpsdsp_rvv.o riscv/sbrdsp_rvv.o
 OBJS-$(CONFIG_AC3DSP) += riscv/ac3dsp_init.o \
                          riscv/ac3dsp_rvb.o
 OBJS-$(CONFIG_ALAC_DECODER) += riscv/alacdsp_init.o
@@ -16,6 +16,8 @@ OBJS-$(CONFIG_FMTCONVERT) += riscv/fmtconvert_init.o
 RVV-OBJS-$(CONFIG_FMTCONVERT) += riscv/fmtconvert_rvv.o
 OBJS-$(CONFIG_G722DSP) += riscv/g722dsp_init.o
 RVV-OBJS-$(CONFIG_G722DSP) += riscv/g722dsp_rvv.o
+OBJS-$(CONFIG_JPEG2000_DECODER) += riscv/jpeg2000dsp_init.o
+RVV-OBJS-$(CONFIG_JPEG2000_DECODER) += riscv/jpeg2000dsp_rvv.o
 OBJS-$(CONFIG_H264CHROMA) += riscv/h264_chroma_init_riscv.o
 RVV-OBJS-$(CONFIG_H264CHROMA) += riscv/h264_mc_chroma.o
 OBJS-$(CONFIG_HUFFYUV_DECODER) += riscv/huffyuvdsp_init.o

@@ -172,7 +172,11 @@ int ff_evc_derive_poc(const EVCParamSets *ps, const EVCParserSliceHeader *sh,
             poc->PicOrderCntVal = 0;
             poc->DocOffset = -1;
         } else {
-            int SubGopLength = (int)pow(2.0, sps->log2_sub_gop_length);
+            int SubGopLength = 1 << sps->log2_sub_gop_length;
+
+            if (tid > (SubGopLength > 1 ? 1 + av_log2(SubGopLength - 1) : 0))
+                return AVERROR_INVALIDDATA;
+
             if (tid == 0) {
                 poc->PicOrderCntVal = poc->prevPicOrderCntVal + SubGopLength;
                 poc->DocOffset = 0;
@@ -187,15 +191,16 @@ int ff_evc_derive_poc(const EVCParamSets *ps, const EVCParserSliceHeader *sh,
                     poc->prevPicOrderCntVal += SubGopLength;
                     ExpectedTemporalId = 0;
                 } else
-                    ExpectedTemporalId = 1 + (int)log2(poc->DocOffset);
+                    ExpectedTemporalId = 1 + av_log2(poc->DocOffset);
+
                 while (tid != ExpectedTemporalId) {
                     poc->DocOffset = (poc->DocOffset + 1) % SubGopLength;
                     if (poc->DocOffset == 0)
                         ExpectedTemporalId = 0;
                     else
-                        ExpectedTemporalId = 1 + (int)log2(poc->DocOffset);
+                        ExpectedTemporalId = 1 + av_log2(poc->DocOffset);
                 }
-                PocOffset = (int)(SubGopLength * ((2.0 * poc->DocOffset + 1) / (int)pow(2.0, tid) - 2));
+                PocOffset = (int)(SubGopLength * ((2.0 * poc->DocOffset + 1) / (1 << tid) - 2));
                 poc->PicOrderCntVal = poc->prevPicOrderCntVal + PocOffset;
             }
         }
