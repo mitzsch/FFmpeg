@@ -298,8 +298,12 @@ static int vkfmt_from_pixfmt2(AVHWDeviceContext *dev_ctx, enum AVPixelFormat p,
 
     for (int i = 0; i < nb_vk_formats_list; i++) {
         if (vk_formats_list[i].pixfmt == p) {
+            VkFormatProperties3 fprops = {
+                .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3,
+            };
             VkFormatProperties2 prop = {
                 .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+                .pNext = &fprops,
             };
             VkFormatFeatureFlagBits2 feats_primary, feats_secondary;
             int basics_primary = 0, basics_secondary = 0;
@@ -310,8 +314,7 @@ static int vkfmt_from_pixfmt2(AVHWDeviceContext *dev_ctx, enum AVPixelFormat p,
                                                    &prop);
 
             feats_primary = tiling == VK_IMAGE_TILING_LINEAR ?
-                             prop.formatProperties.linearTilingFeatures :
-                             prop.formatProperties.optimalTilingFeatures;
+                             fprops.linearTilingFeatures : fprops.optimalTilingFeatures;
             basics_primary = (feats_primary & basic_flags) == basic_flags;
             storage_primary = !!(feats_primary & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT);
 
@@ -320,8 +323,7 @@ static int vkfmt_from_pixfmt2(AVHWDeviceContext *dev_ctx, enum AVPixelFormat p,
                                                        vk_formats_list[i].fallback[0],
                                                        &prop);
                 feats_secondary = tiling == VK_IMAGE_TILING_LINEAR ?
-                                  prop.formatProperties.linearTilingFeatures :
-                                  prop.formatProperties.optimalTilingFeatures;
+                                  fprops.linearTilingFeatures : fprops.optimalTilingFeatures;
                 basics_secondary = (feats_secondary & basic_flags) == basic_flags;
                 storage_secondary = !!(feats_secondary & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT);
             } else {
@@ -405,7 +407,6 @@ typedef struct VulkanOptExtension {
 } VulkanOptExtension;
 
 static const VulkanOptExtension optional_instance_exts[] = {
-    /* Pointless, here avoid zero-sized structs */
     { VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,          FF_VK_EXT_NO_FLAG                },
 };
 
@@ -783,6 +784,16 @@ static int create_instance(AVHWDeviceContext *ctx, AVDictionary *opts)
         validation_features.enabledValidationFeatureCount = FF_ARRAY_ELEMS(feat_list);
         inst_props.pNext = &validation_features;
     }
+
+#ifdef __APPLE__
+    for (int i = 0; i < inst_props.enabledExtensionCount; i++) {
+        if (!strcmp(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
+                    inst_props.ppEnabledExtensionNames[i])) {
+            inst_props.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+            break;
+        }
+    }
+#endif
 
     /* Try to create the instance */
     ret = vk->CreateInstance(&inst_props, hwctx->alloc, &hwctx->inst);
