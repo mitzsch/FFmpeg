@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 Rémi Denis-Courmont.
+ * Copyright (c) 2023 Institue of Software Chinese Academy of Sciences (ISCAS).
  *
  * This file is part of FFmpeg.
  *
@@ -18,35 +18,32 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "config.h"
+#include <stdint.h>
 
 #include "libavutil/attributes.h"
 #include "libavutil/cpu.h"
-#include "libavcodec/audiodsp.h"
+#include "libavutil/riscv/cpu.h"
+#include "libavcodec/vc1.h"
 
-void ff_vector_clipf_rvf(float *dst, const float *src, int len, float min, float max);
+void ff_vc1_inv_trans_8x8_dc_rvv(uint8_t *dest, ptrdiff_t stride, int16_t *block);
+void ff_vc1_inv_trans_4x8_dc_rvv(uint8_t *dest, ptrdiff_t stride, int16_t *block);
+void ff_vc1_inv_trans_8x4_dc_rvv(uint8_t *dest, ptrdiff_t stride, int16_t *block);
+void ff_vc1_inv_trans_4x4_dc_rvv(uint8_t *dest, ptrdiff_t stride, int16_t *block);
 
-int32_t ff_scalarproduct_int16_rvv(const int16_t *v1, const int16_t *v2, int len);
-void ff_vector_clip_int32_rvv(int32_t *dst, const int32_t *src, int32_t min,
-                              int32_t max, unsigned int len);
-void ff_vector_clipf_rvv(float *dst, const float *src, int len, float min, float max);
-
-av_cold void ff_audiodsp_init_riscv(AudioDSPContext *c)
+av_cold void ff_vc1dsp_init_riscv(VC1DSPContext *dsp)
 {
-#if HAVE_RV
+#if HAVE_RVV
     int flags = av_get_cpu_flags();
 
-    if (flags & AV_CPU_FLAG_RVF)
-        c->vector_clipf = ff_vector_clipf_rvf;
-#if HAVE_RVV
-    if (flags & AV_CPU_FLAG_RVB_ADDR) {
-        if (flags & AV_CPU_FLAG_RVV_I32) {
-            c->scalarproduct_int16 = ff_scalarproduct_int16_rvv;
-            c->vector_clip_int32 = ff_vector_clip_int32_rvv;
+    if (ff_get_rv_vlenb() >= 16) {
+        if (flags & AV_CPU_FLAG_RVV_I64) {
+            dsp->vc1_inv_trans_8x8_dc = ff_vc1_inv_trans_8x8_dc_rvv;
+            dsp->vc1_inv_trans_8x4_dc = ff_vc1_inv_trans_8x4_dc_rvv;
         }
-        if (flags & AV_CPU_FLAG_RVV_F32)
-            c->vector_clipf = ff_vector_clipf_rvv;
+        if (flags & AV_CPU_FLAG_RVV_I32) {
+            dsp->vc1_inv_trans_4x8_dc = ff_vc1_inv_trans_4x8_dc_rvv;
+            dsp->vc1_inv_trans_4x4_dc = ff_vc1_inv_trans_4x4_dc_rvv;
+        }
     }
-#endif
 #endif
 }
