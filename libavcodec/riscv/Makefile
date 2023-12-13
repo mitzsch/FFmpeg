@@ -1,5 +1,7 @@
 OBJS-$(CONFIG_AAC_DECODER) += riscv/aacpsdsp_init.o riscv/sbrdsp_init.o
 RVV-OBJS-$(CONFIG_AAC_DECODER) += riscv/aacpsdsp_rvv.o riscv/sbrdsp_rvv.o
+OBJS-$(CONFIG_AAC_ENCODER) += riscv/aacencdsp_init.o
+RVV-OBJS-$(CONFIG_AAC_ENCODER) += riscv/aacencdsp_rvv.o
 OBJS-$(CONFIG_AC3DSP) += riscv/ac3dsp_init.o
 RV-OBJS-$(CONFIG_AC3DSP) += riscv/ac3dsp_rvb.o
 RVV-OBJS-$(CONFIG_AC3DSP) += riscv/ac3dsp_rvv.o
@@ -33,6 +35,8 @@ OBJS-$(CONFIG_LLVIDDSP) += riscv/llviddsp_init.o
 RVV-OBJS-$(CONFIG_LLVIDDSP) += riscv/llviddsp_rvv.o
 OBJS-$(CONFIG_LLVIDENCDSP) += riscv/llvidencdsp_init.o
 RVV-OBJS-$(CONFIG_LLVIDENCDSP) += riscv/llvidencdsp_rvv.o
+OBJS-$(CONFIG_LPC) += riscv/lpc_init.o
+RVV-OBJS-$(CONFIG_LPC) += riscv/lpc_rvv.o
 OBJS-$(CONFIG_OPUS_DECODER) += riscv/opusdsp_init.o
 RVV-OBJS-$(CONFIG_OPUS_DECODER) += riscv/opusdsp_rvv.o
 OBJS-$(CONFIG_PIXBLOCKDSP) += riscv/pixblockdsp_init.o
