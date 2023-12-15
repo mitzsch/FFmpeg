@@ -63,6 +63,9 @@ typedef struct DemuxStream {
 
     double ts_scale;
 
+    /* true if stream data should be discarded */
+    int discard;
+
     // scheduler returned EOF for this stream
     int finished;
 
@@ -79,6 +82,8 @@ typedef struct DemuxStream {
     int64_t       next_dts;
     ///< dts of the last packet read for this stream (in AV_TIME_BASE units)
     int64_t       dts;
+
+    const AVCodecDescriptor *codec_desc;
 
     /* number of packets successfully read for this stream */
     uint64_t nb_packets;
@@ -112,6 +117,7 @@ typedef struct Demuxer {
     /* number of streams that the user was warned of */
     int nb_streams_warn;
 
+    float  readrate;
     double readrate_initial_burst;
 
     Scheduler            *sch;
@@ -136,7 +142,8 @@ static Demuxer *demuxer_from_ifile(InputFile *f)
 InputStream *ist_find_unused(enum AVMediaType type)
 {
     for (InputStream *ist = ist_iter(NULL); ist; ist = ist_iter(ist)) {
-        if (ist->par->codec_type == type && ist->discard &&
+        DemuxStream *ds = ds_from_ist(ist);
+        if (ist->par->codec_type == type && ds->discard &&
             ist->user_set_discard != AVDISCARD_ALL)
             return ist;
     }
@@ -271,7 +278,7 @@ static void ts_discontinuity_process(Demuxer *d, InputStream *ist,
         ts_discontinuity_detect(d, ist, pkt);
 }
 
-static int ist_dts_update(DemuxStream *ds, AVPacket *pkt)
+static int ist_dts_update(DemuxStream *ds, AVPacket *pkt, FrameData *fd)
 {
     InputStream *ist = &ds->ist;
     const AVCodecParameters *par = ist->par;
@@ -316,8 +323,8 @@ static int ist_dts_update(DemuxStream *ds, AVPacket *pkt)
                                              (AVRational){ 2, 1 });
             int fields = 2;
 
-            if (ist->codec_desc                                 &&
-                (ist->codec_desc->props & AV_CODEC_PROP_FIELDS) &&
+            if (ds->codec_desc                                 &&
+                (ds->codec_desc->props & AV_CODEC_PROP_FIELDS) &&
                 av_stream_get_parser(ist->st))
                 fields = 1 + av_stream_get_parser(ist->st)->repeat_pict;
 
@@ -326,22 +333,12 @@ static int ist_dts_update(DemuxStream *ds, AVPacket *pkt)
         break;
     }
 
-    av_assert0(!pkt->opaque_ref);
-    if (ds->streamcopy_needed) {
-        DemuxPktData *pd;
-
-        pkt->opaque_ref = av_buffer_allocz(sizeof(*pd));
-        if (!pkt->opaque_ref)
-            return AVERROR(ENOMEM);
-        pd = (DemuxPktData*)pkt->opaque_ref->data;
-
-        pd->dts_est = ds->dts;
-    }
+    fd->dts_est = ds->dts;
 
     return 0;
 }
 
-static int ts_fixup(Demuxer *d, AVPacket *pkt)
+static int ts_fixup(Demuxer *d, AVPacket *pkt, FrameData *fd)
 {
     InputFile *ifile = &d->f;
     InputStream *ist = ifile->streams[pkt->stream_index];
@@ -425,7 +422,7 @@ static int ts_fixup(Demuxer *d, AVPacket *pkt)
     ts_discontinuity_process(d, ist, pkt);
 
     // update estimated/predicted dts
-    ret = ist_dts_update(ds, pkt);
+    ret = ist_dts_update(ds, pkt, fd);
     if (ret < 0)
         return ret;
 
@@ -437,9 +434,14 @@ static int input_packet_process(Demuxer *d, AVPacket *pkt, unsigned *send_flags)
     InputFile     *f = &d->f;
     InputStream *ist = f->streams[pkt->stream_index];
     DemuxStream  *ds = ds_from_ist(ist);
+    FrameData *fd;
     int ret = 0;
 
-    ret = ts_fixup(d, pkt);
+    fd = packet_data(pkt);
+    if (!fd)
+        return AVERROR(ENOMEM);
+
+    ret = ts_fixup(d, pkt, fd);
     if (ret < 0)
         return ret;
 
@@ -456,6 +458,8 @@ static int input_packet_process(Demuxer *d, AVPacket *pkt, unsigned *send_flags)
     ds->data_size += pkt->size;
     ds->nb_packets++;
 
+    fd->wallclock[LATENCY_PROBE_DEMUX] = av_gettime_relative();
+
     if (debug_ts) {
         av_log(NULL, AV_LOG_INFO, "demuxer+ffmpeg -> ist_index:%d:%d type:%s pkt_pts:%s pkt_pts_time:%s pkt_dts:%s pkt_dts_time:%s duration:%s duration_time:%s off:%s off_time:%s\n",
                f->index, pkt->stream_index,
@@ -463,8 +467,7 @@ static int input_packet_process(Demuxer *d, AVPacket *pkt, unsigned *send_flags)
                av_ts2str(pkt->pts), av_ts2timestr(pkt->pts, &pkt->time_base),
                av_ts2str(pkt->dts), av_ts2timestr(pkt->dts, &pkt->time_base),
                av_ts2str(pkt->duration), av_ts2timestr(pkt->duration, &pkt->time_base),
-               av_ts2str(input_files[ist->file_index]->ts_offset),
-               av_ts2timestr(input_files[ist->file_index]->ts_offset, &AV_TIME_BASE_Q));
+               av_ts2str(f->ts_offset),  av_ts2timestr(f->ts_offset, &AV_TIME_BASE_Q));
     }
 
     pkt->stream_index = ds->sch_idx_stream;
@@ -486,7 +489,7 @@ static void readrate_sleep(Demuxer *d)
         int64_t stream_ts_offset, pts, now;
         stream_ts_offset = FFMAX(ds->first_dts != AV_NOPTS_VALUE ? ds->first_dts : 0, file_start);
         pts = av_rescale(ds->dts, 1000000, AV_TIME_BASE);
-        now = (av_gettime_relative() - d->wallclock_start) * f->readrate + stream_ts_offset;
+        now = (av_gettime_relative() - d->wallclock_start) * d->readrate + stream_ts_offset;
         if (pts - burst_until > now)
             av_usleep(pts - burst_until - now);
     }
@@ -557,11 +560,14 @@ static void discard_unused_programs(InputFile *ifile)
         AVProgram *p = ifile->ctx->programs[j];
         int discard  = AVDISCARD_ALL;
 
-        for (int k = 0; k < p->nb_stream_indexes; k++)
-            if (!ifile->streams[p->stream_index[k]]->discard) {
+        for (int k = 0; k < p->nb_stream_indexes; k++) {
+            DemuxStream *ds = ds_from_ist(ifile->streams[p->stream_index[k]]);
+
+            if (!ds->discard) {
                 discard = AVDISCARD_DEFAULT;
                 break;
             }
+        }
         p->discard = discard;
     }
 }
@@ -638,7 +644,7 @@ static void *input_thread(void *arg)
            dynamically in stream : we ignore them */
         ds = pkt->stream_index < f->nb_streams ?
              ds_from_ist(f->streams[pkt->stream_index]) : NULL;
-        if (!ds || ds->ist.discard || ds->finished) {
+        if (!ds || ds->discard || ds->finished) {
             report_new_stream(d, pkt);
             av_packet_unref(pkt);
             continue;
@@ -659,7 +665,7 @@ static void *input_thread(void *arg)
         if (ret < 0)
             break;
 
-        if (f->readrate)
+        if (d->readrate)
             readrate_sleep(d);
 
         ret = demux_send(d, ds, pkt, send_flags);
@@ -690,7 +696,7 @@ static void demux_final_stats(Demuxer *d)
         DemuxStream  *ds = ds_from_ist(ist);
         enum AVMediaType type = ist->par->codec_type;
 
-        if (ist->discard || type == AVMEDIA_TYPE_ATTACHMENT)
+        if (ds->discard || type == AVMEDIA_TYPE_ATTACHMENT)
             continue;
 
         total_size    += ds->data_size;
@@ -761,7 +767,7 @@ void ifile_close(InputFile **pf)
 
 static int ist_use(InputStream *ist, int decoding_needed)
 {
-    Demuxer      *d = demuxer_from_ifile(input_files[ist->file_index]);
+    Demuxer      *d = demuxer_from_ifile(ist->file);
     DemuxStream *ds = ds_from_ist(ist);
     int ret;
 
@@ -778,8 +784,8 @@ static int ist_use(InputStream *ist, int decoding_needed)
         ds->sch_idx_stream = ret;
     }
 
-    if (ist->discard) {
-        ist->discard = 0;
+    if (ds->discard) {
+        ds->discard = 0;
         d->nb_streams_used++;
     }
 
@@ -830,7 +836,7 @@ int ist_output_add(InputStream *ist, OutputStream *ost)
 
 int ist_filter_add(InputStream *ist, InputFilter *ifilter, int is_simple)
 {
-    Demuxer      *d = demuxer_from_ifile(input_files[ist->file_index]);
+    Demuxer      *d = demuxer_from_ifile(ist->file);
     DemuxStream *ds = ds_from_ist(ist);
     int ret;
 
@@ -994,7 +1000,7 @@ static DemuxStream *demux_stream_alloc(Demuxer *d, AVStream *st)
     ds->sch_idx_dec    = -1;
 
     ds->ist.st         = st;
-    ds->ist.file_index = f->index;
+    ds->ist.file       = f;
     ds->ist.index      = st->index;
     ds->ist.class      = &input_stream_class;
 
@@ -1025,7 +1031,7 @@ static int ist_add(const OptionsContext *o, Demuxer *d, AVStream *st)
 
     ist = &ds->ist;
 
-    ist->discard = 1;
+    ds->discard     = 1;
     st->discard  = AVDISCARD_ALL;
     ds->first_dts   = AV_NOPTS_VALUE;
     ds->next_dts    = AV_NOPTS_VALUE;
@@ -1246,7 +1252,7 @@ static int ist_add(const OptionsContext *o, Demuxer *d, AVStream *st)
         return ret;
     }
 
-    ist->codec_desc = avcodec_descriptor_get(ist->par->codec_id);
+    ds->codec_desc = avcodec_descriptor_get(ist->par->codec_id);
 
     return 0;
 }
@@ -1574,19 +1580,19 @@ int ifile_open(const OptionsContext *o, const char *filename, Scheduler *sch)
 
     f->format_nots = !!(ic->iformat->flags & AVFMT_NOTIMESTAMPS);
 
-    f->readrate = o->readrate ? o->readrate : 0.0;
-    if (f->readrate < 0.0f) {
-        av_log(d, AV_LOG_ERROR, "Option -readrate is %0.3f; it must be non-negative.\n", f->readrate);
+    d->readrate = o->readrate ? o->readrate : 0.0;
+    if (d->readrate < 0.0f) {
+        av_log(d, AV_LOG_ERROR, "Option -readrate is %0.3f; it must be non-negative.\n", d->readrate);
         return AVERROR(EINVAL);
     }
     if (o->rate_emu) {
-        if (f->readrate) {
-            av_log(d, AV_LOG_WARNING, "Both -readrate and -re set. Using -readrate %0.3f.\n", f->readrate);
+        if (d->readrate) {
+            av_log(d, AV_LOG_WARNING, "Both -readrate and -re set. Using -readrate %0.3f.\n", d->readrate);
         } else
-            f->readrate = 1.0f;
+            d->readrate = 1.0f;
     }
 
-    if (f->readrate) {
+    if (d->readrate) {
         d->readrate_initial_burst = o->readrate_initial_burst ? o->readrate_initial_burst : 0.5;
         if (d->readrate_initial_burst < 0.0) {
             av_log(d, AV_LOG_ERROR,

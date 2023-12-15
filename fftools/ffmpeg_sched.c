@@ -192,7 +192,7 @@ typedef struct SchMuxStream {
     ////////////////////////////////////////////////////////////
     // The following are protected by Scheduler.schedule_lock //
 
-    /* dts of the last packet sent to this stream
+    /* dts+duration of the last packet sent to this stream
        in AV_TIME_BASE_Q */
     int64_t             last_dts;
     // this stream no longer accepts input
@@ -423,7 +423,29 @@ static void task_init(Scheduler *sch, SchTask *task, enum SchedulerNodeType type
     task->func_arg  = func_arg;
 }
 
-int sch_stop(Scheduler *sch)
+static int64_t trailing_dts(const Scheduler *sch, int count_finished)
+{
+    int64_t min_dts = INT64_MAX;
+
+    for (unsigned i = 0; i < sch->nb_mux; i++) {
+        const SchMux *mux = &sch->mux[i];
+
+        for (unsigned j = 0; j < mux->nb_streams; j++) {
+            const SchMuxStream *ms = &mux->streams[j];
+
+            if (ms->source_finished && !count_finished)
+                continue;
+            if (ms->last_dts == AV_NOPTS_VALUE)
+                return AV_NOPTS_VALUE;
+
+            min_dts = FFMIN(min_dts, ms->last_dts);
+        }
+    }
+
+    return min_dts == INT64_MAX ? AV_NOPTS_VALUE : min_dts;
+}
+
+int sch_stop(Scheduler *sch, int64_t *finish_ts)
 {
     int ret = 0, err;
 
@@ -470,6 +492,9 @@ int sch_stop(Scheduler *sch)
         ret = err_merge(ret, err);
     }
 
+    if (finish_ts)
+        *finish_ts = trailing_dts(sch, 1);
+
     return ret;
 }
 
@@ -480,7 +505,7 @@ void sch_free(Scheduler **psch)
     if (!sch)
         return;
 
-    sch_stop(sch);
+    sch_stop(sch, NULL);
 
     for (unsigned i = 0; i < sch->nb_demux; i++) {
         SchDemux *d = &sch->demux[i];
@@ -565,6 +590,8 @@ void sch_free(Scheduler **psch)
 
     av_freep(&sch->sdp_filename);
 
+    pthread_mutex_destroy(&sch->schedule_lock);
+
     pthread_mutex_destroy(&sch->mux_ready_lock);
 
     pthread_mutex_destroy(&sch->mux_done_lock);
@@ -589,6 +616,10 @@ Scheduler *sch_alloc(void)
 
     sch->class    = &scheduler_class;
     sch->sdp_auto = 1;
+
+    ret = pthread_mutex_init(&sch->schedule_lock, NULL);
+    if (ret)
+        goto fail;
 
     ret = pthread_mutex_init(&sch->mux_ready_lock, NULL);
     if (ret)
@@ -1162,28 +1193,6 @@ int sch_mux_sub_heartbeat_add(Scheduler *sch, unsigned mux_idx, unsigned stream_
     return 0;
 }
 
-static int64_t trailing_dts(const Scheduler *sch)
-{
-    int64_t min_dts = INT64_MAX;
-
-    for (unsigned i = 0; i < sch->nb_mux; i++) {
-        const SchMux *mux = &sch->mux[i];
-
-        for (unsigned j = 0; j < mux->nb_streams; j++) {
-            const SchMuxStream *ms = &mux->streams[j];
-
-            if (ms->source_finished)
-                continue;
-            if (ms->last_dts == AV_NOPTS_VALUE)
-                return AV_NOPTS_VALUE;
-
-            min_dts = FFMIN(min_dts, ms->last_dts);
-        }
-    }
-
-    return min_dts == INT64_MAX ? AV_NOPTS_VALUE : min_dts;
-}
-
 static void schedule_update_locked(Scheduler *sch)
 {
     int64_t dts;
@@ -1194,7 +1203,7 @@ static void schedule_update_locked(Scheduler *sch)
     if (atomic_load(&sch->terminate))
         return;
 
-    dts = trailing_dts(sch);
+    dts = trailing_dts(sch, 0);
 
     atomic_store(&sch->last_dts, dts);
 
@@ -1616,8 +1625,8 @@ static int send_to_mux(Scheduler *sch, SchMux *mux, unsigned stream_idx,
                        AVPacket *pkt)
 {
     SchMuxStream *ms = &mux->streams[stream_idx];
-    int64_t dts = (pkt && pkt->dts != AV_NOPTS_VALUE)                    ?
-                  av_rescale_q(pkt->dts, pkt->time_base, AV_TIME_BASE_Q) :
+    int64_t dts = (pkt && pkt->dts != AV_NOPTS_VALUE)                                    ?
+                  av_rescale_q(pkt->dts + pkt->duration, pkt->time_base, AV_TIME_BASE_Q) :
                   AV_NOPTS_VALUE;
 
     // queue the packet if the muxer cannot be started yet
