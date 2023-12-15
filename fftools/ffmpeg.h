@@ -94,6 +94,17 @@ enum PacketOpaque {
     PKT_OPAQUE_FIX_SUB_DURATION,
 };
 
+enum LatencyProbe {
+    LATENCY_PROBE_DEMUX,
+    LATENCY_PROBE_DEC_PRE,
+    LATENCY_PROBE_DEC_POST,
+    LATENCY_PROBE_FILTER_PRE,
+    LATENCY_PROBE_FILTER_POST,
+    LATENCY_PROBE_ENC_PRE,
+    LATENCY_PROBE_ENC_POST,
+    LATENCY_PROBE_NB,
+};
+
 typedef struct HWDevice {
     const char *name;
     enum AVHWDeviceType type;
@@ -114,12 +125,6 @@ typedef struct {
     int ofile_idx, ostream_idx;               // output
 } AudioChannelMap;
 #endif
-
-typedef struct DemuxPktData {
-    // estimated dts in AV_TIME_BASE_Q,
-    // to be used when real dts is missing
-    int64_t dts_est;
-} DemuxPktData;
 
 typedef struct OptionsContext {
     OptionGroup *g;
@@ -322,8 +327,6 @@ typedef struct FilterGraph {
     const AVClass *class;
     int            index;
 
-    AVFilterGraph *graph;
-
     InputFilter   **inputs;
     int          nb_inputs;
     OutputFilter **outputs;
@@ -335,11 +338,12 @@ typedef struct Decoder Decoder;
 typedef struct InputStream {
     const AVClass *class;
 
-    int file_index;
+    /* parent source */
+    struct InputFile *file;
+
     int index;
 
     AVStream *st;
-    int discard;             /* true if stream data should be discarded */
     int user_set_discard;
     int decoding_needed;     /* non zero if the packets must be decoded in 'raw_fifo', see DECODING_FOR_* */
 #define DECODING_FOR_OST    1
@@ -354,7 +358,6 @@ typedef struct InputStream {
     Decoder *decoder;
     AVCodecContext *dec_ctx;
     const AVCodec *dec;
-    const AVCodecDescriptor *codec_desc;
 
     AVRational framerate_guessed;
 
@@ -409,7 +412,6 @@ typedef struct InputFile {
     int format_nots;
 
     AVFormatContext *ctx;
-    int eof_reached;      /* true if eof reached */
     int64_t input_ts_offset;
     int input_sync_ref;
     /**
@@ -426,7 +428,6 @@ typedef struct InputFile {
     InputStream **streams;
     int        nb_streams;
 
-    float readrate;
     int accurate_seek;
 } InputFile;
 
@@ -514,7 +515,9 @@ typedef struct OutputStream {
 
     enum AVMediaType type;
 
-    int file_index;          /* file index */
+    /* parent muxer */
+    struct OutputFile *file;
+
     int index;               /* stream index in the output file */
 
     /**
@@ -588,8 +591,6 @@ typedef struct OutputStream {
     /* packet quality factor */
     atomic_int quality;
 
-    int sq_idx_mux;
-
     EncStats enc_stats_pre;
     EncStats enc_stats_post;
 
@@ -611,8 +612,6 @@ typedef struct OutputFile {
     OutputStream **streams;
     int         nb_streams;
 
-    SyncQueue *sq_encode;
-
     int64_t recording_time;  ///< desired length of the resulting file in microseconds == AV_TIME_BASE units
     int64_t start_time;      ///< start time in microseconds == AV_TIME_BASE units
 
@@ -622,6 +621,10 @@ typedef struct OutputFile {
 
 // optionally attached as opaque_ref to decoded AVFrames
 typedef struct FrameData {
+    // demuxer-estimated dts in AV_TIME_BASE_Q,
+    // to be used when real dts is missing
+    int64_t dts_est;
+
     // properties that come from the decoder
     struct {
         uint64_t   frame_num;
@@ -633,6 +636,8 @@ typedef struct FrameData {
     AVRational frame_rate_filter;
 
     int        bits_per_raw_sample;
+
+    int64_t wallclock[LATENCY_PROBE_NB];
 } FrameData;
 
 extern InputFile   **input_files;
@@ -722,6 +727,9 @@ int subtitle_wrap_frame(AVFrame *frame, AVSubtitle *subtitle, int copy);
 FrameData *frame_data(AVFrame *frame);
 
 const FrameData *frame_data_c(AVFrame *frame);
+
+FrameData       *packet_data  (AVPacket *pkt);
+const FrameData *packet_data_c(AVPacket *pkt);
 
 /**
  * Set up fallback filtering parameters from a decoder context. They will only
