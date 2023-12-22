@@ -60,6 +60,7 @@
 #define FFMPEG_OPT_ENC_TIME_BASE_NUM 1
 #define FFMPEG_OPT_TOP 1
 #define FFMPEG_OPT_FORCE_KF_SOURCE_NO_DROP 1
+#define FFMPEG_OPT_VSYNC_DROP 1
 
 #define FFMPEG_ERROR_RATE_EXCEEDED FFERRTAG('E', 'R', 'E', 'D')
 
@@ -69,7 +70,9 @@ enum VideoSyncMethod {
     VSYNC_CFR,
     VSYNC_VFR,
     VSYNC_VSCFR,
+#if FFMPEG_OPT_VSYNC_DROP
     VSYNC_DROP,
+#endif
 };
 
 enum EncTimeBase {
@@ -281,6 +284,8 @@ typedef struct OptionsContext {
     int        nb_disposition;
     SpecifierOpt *program;
     int        nb_program;
+    SpecifierOpt *stream_groups;
+    int        nb_stream_groups;
     SpecifierOpt *time_bases;
     int        nb_time_bases;
     SpecifierOpt *enc_time_bases;
@@ -462,6 +467,7 @@ enum EncStatsType {
     ENC_STATS_PKT_SIZE,
     ENC_STATS_BITRATE,
     ENC_STATS_AVG_BITRATE,
+    ENC_STATS_KEYFRAME,
 };
 
 typedef struct EncStatsComponent {
@@ -476,6 +482,9 @@ typedef struct EncStats {
     int              nb_components;
 
     AVIOContext        *io;
+
+    pthread_mutex_t     lock;
+    int                 lock_initialized;
 } EncStats;
 
 extern const char *const forced_keyframes_const_names[];
