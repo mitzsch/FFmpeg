@@ -317,10 +317,8 @@ static int vpx_decode(AVCodecContext *avctx, AVFrame *picture,
                 return AVERROR(ENOMEM);
             if (ctx->has_alpha_channel) {
                 picture->buf[1] = av_buffer_ref(img_alpha->fb_priv);
-                if (!picture->buf[1]) {
-                    av_frame_unref(picture);
+                if (!picture->buf[1])
                     return AVERROR(ENOMEM);
-                }
             }
             for (int i = 0; i < 4; i++) {
                 picture->data[i] = planes[i];
@@ -329,8 +327,8 @@ static int vpx_decode(AVCodecContext *avctx, AVFrame *picture,
         } else {
             if ((ret = ff_get_buffer(avctx, picture, 0)) < 0)
                 return ret;
-            av_image_copy(picture->data, picture->linesize, (const uint8_t**)planes,
-                          linesizes, avctx->pix_fmt, img->d_w, img->d_h);
+            av_image_copy2(picture->data, picture->linesize, planes,
+                           linesizes, avctx->pix_fmt, img->d_w, img->d_h);
         }
         *got_frame           = 1;
     }

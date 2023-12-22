@@ -49,10 +49,10 @@ static void tlog_ref(void *ctx, AVFrame *ref, int end)
 {
 #ifdef TRACE
     ff_tlog(ctx,
-            "ref[%p buf:%p data:%p linesize[%d, %d, %d, %d] pts:%"PRId64" pos:%"PRId64,
+            "ref[%p buf:%p data:%p linesize[%d, %d, %d, %d] pts:%"PRId64,
             ref, ref->buf, ref->data[0],
             ref->linesize[0], ref->linesize[1], ref->linesize[2], ref->linesize[3],
-            ref->pts, ref->pkt_pos);
+            ref->pts);
 
     if (ref->width) {
         ff_tlog(ctx, " a:%d/%d s:%dx%d i:%c iskey:%d type:%c",
@@ -1166,6 +1166,16 @@ static int forward_status_change(AVFilterContext *filter, AVFilterLink *in)
 static int ff_filter_activate_default(AVFilterContext *filter)
 {
     unsigned i;
+
+    for (i = 0; i < filter->nb_outputs; i++) {
+        int ret = filter->outputs[i]->status_in;
+
+        if (ret) {
+            for (int j = 0; j < filter->nb_inputs; j++)
+                ff_inlink_set_status(filter->inputs[j], ret);
+            return 0;
+        }
+    }
 
     for (i = 0; i < filter->nb_inputs; i++) {
         if (samples_ready(filter->inputs[i], filter->inputs[i]->min_samples)) {

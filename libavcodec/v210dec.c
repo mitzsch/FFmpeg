@@ -201,7 +201,8 @@ static int decode_frame(AVCodecContext *avctx, AVFrame *pic,
         if (ret < 0)
             return ret;
         decode_row((const uint32_t *)psrc, (uint16_t *)pointers[0], (uint16_t *)pointers[1], (uint16_t *)pointers[2], avctx->width * avctx->height, s->unpack_frame);
-        av_image_copy(pic->data, pic->linesize, (const uint8_t **)pointers, linesizes, avctx->pix_fmt, avctx->width, avctx->height);
+        av_image_copy2(pic->data, pic->linesize, pointers, linesizes,
+                       avctx->pix_fmt, avctx->width, avctx->height);
         av_freep(&pointers[0]);
     }
 
@@ -226,7 +227,6 @@ static const AVOption v210dec_options[] = {
 
 static const AVClass v210dec_class = {
     .class_name = "V210 Decoder",
-    .item_name  = av_default_item_name,
     .option     = v210dec_options,
     .version    = LIBAVUTIL_VERSION_INT,
 };

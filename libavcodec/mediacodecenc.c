@@ -268,8 +268,11 @@ static av_cold int mediacodec_init(AVCodecContext *avctx)
 
     if (avctx->bit_rate)
         ff_AMediaFormat_setInt32(format, "bitrate", avctx->bit_rate);
-    if (s->bitrate_mode >= 0)
+    if (s->bitrate_mode >= 0) {
         ff_AMediaFormat_setInt32(format, "bitrate-mode", s->bitrate_mode);
+        if (s->bitrate_mode == BITRATE_MODE_CQ && avctx->global_quality > 0)
+            ff_AMediaFormat_setInt32(format, "quality", avctx->global_quality);
+    }
     // frame-rate and i-frame-interval are required to configure codec
     if (avctx->framerate.num >= avctx->framerate.den && avctx->framerate.den > 0) {
         s->fps = avctx->framerate.num / avctx->framerate.den;
@@ -428,9 +431,6 @@ static void copy_frame_to_buffer(AVCodecContext *avctx, const AVFrame *frame, ui
     MediaCodecEncContext *s = avctx->priv_data;
     uint8_t *dst_data[4] = {};
     int dst_linesize[4] = {};
-    const uint8_t *src_data[4] = {
-            frame->data[0], frame->data[1], frame->data[2], frame->data[3]
-    };
 
     if (avctx->pix_fmt == AV_PIX_FMT_YUV420P) {
         dst_data[0] = dst;
@@ -449,8 +449,8 @@ static void copy_frame_to_buffer(AVCodecContext *avctx, const AVFrame *frame, ui
         av_assert0(0);
     }
 
-    av_image_copy(dst_data, dst_linesize, src_data, frame->linesize,
-                  avctx->pix_fmt, avctx->width, avctx->height);
+    av_image_copy2(dst_data, dst_linesize, frame->data, frame->linesize,
+                   avctx->pix_fmt, avctx->width, avctx->height);
 }
 
 static int mediacodec_send(AVCodecContext *avctx,
@@ -607,7 +607,6 @@ static const AVCodecHWConfigInternal *const mediacodec_hw_configs[] = {
 #define MEDIACODEC_ENCODER_CLASS(name)              \
 static const AVClass name ## _mediacodec_class = {  \
     .class_name = #name "_mediacodec",              \
-    .item_name  = av_default_item_name,             \
     .option     = name ## _options,                 \
     .version    = LIBAVUTIL_VERSION_INT,            \
 };                                                  \

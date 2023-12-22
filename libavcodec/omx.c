@@ -793,7 +793,8 @@ static int omx_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
             need_copy = 1;
         }
         if (need_copy)
-            av_image_copy(dst, linesize, (const uint8_t**) frame->data, frame->linesize, avctx->pix_fmt, avctx->width, avctx->height);
+            av_image_copy2(dst, linesize, frame->data, frame->linesize,
+                           avctx->pix_fmt, avctx->width, avctx->height);
         buffer->nFlags = OMX_BUFFERFLAG_ENDOFFRAME;
         buffer->nOffset = 0;
         // Convert the timestamps to microseconds; some encoders can ignore
@@ -932,7 +933,6 @@ static const enum AVPixelFormat omx_encoder_pix_fmts[] = {
 
 static const AVClass omx_mpeg4enc_class = {
     .class_name = "mpeg4_omx",
-    .item_name  = av_default_item_name,
     .option     = options,
     .version    = LIBAVUTIL_VERSION_INT,
 };
@@ -953,7 +953,6 @@ const FFCodec ff_mpeg4_omx_encoder = {
 
 static const AVClass omx_h264enc_class = {
     .class_name = "h264_omx",
-    .item_name  = av_default_item_name,
     .option     = options,
     .version    = LIBAVUTIL_VERSION_INT,
 };
