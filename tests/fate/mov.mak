@@ -18,10 +18,6 @@ FATE_MOV = fate-mov-3elist \
            fate-mov-neg-firstpts-discard-frames \
            fate-mov-stream-shorter-than-movie \
            fate-mov-pcm-remux \
-           fate-mov-avif-demux-still-image-1-item \
-           fate-mov-avif-demux-still-image-multiple-items \
-           fate-mov-heic-demux-still-image-1-item \
-           fate-mov-heic-demux-still-image-multiple-items \
 
 FATE_MOV_FFPROBE = fate-mov-neg-firstpts-discard \
                    fate-mov-neg-firstpts-discard-vorbis \
@@ -144,14 +140,22 @@ fate-mov-mp4-ttml-stpp: CMD = transcode srt $(TARGET_SAMPLES)/sub/SubRip_capabil
 fate-mov-mp4-ttml-dfxp: CMD = transcode srt $(TARGET_SAMPLES)/sub/SubRip_capability_tester.srt mp4 "-map 0:s -c:s ttml -time_base:s 1:1000 -tag:s dfxp -strict unofficial" "-map 0 -c copy" "-of json -show_entries packet:stream=index,codec_type,codec_tag_string,codec_tag,codec_name,time_base,start_time,duration_ts,duration,nb_frames,nb_read_packets:stream_tags"
 
 # avif demuxing - still image with 1 item.
+FATE_MOV_FFMPEG-$(call FRAMEMD5, MOV, AV1, AV1_PARSER) \
+                           += fate-mov-avif-demux-still-image-1-item
 fate-mov-avif-demux-still-image-1-item: CMD = framemd5 -c:v av1 -i $(TARGET_SAMPLES)/avif/still_image.avif -c:v copy
 
 # avif demuxing - still image with multiple items. only the primary item will be
 # parsed.
+FATE_MOV_FFMPEG-$(call FRAMEMD5, MOV, AV1, AV1_PARSER) \
+                           += fate-mov-avif-demux-still-image-multiple-items
 fate-mov-avif-demux-still-image-multiple-items: CMD = framemd5 -c:v av1 -i $(TARGET_SAMPLES)/avif/still_image_exif.avif -c:v copy
 
+FATE_MOV_FFMPEG-$(call FRAMEMD5, MOV, HEVC, HEVC_PARSER) \
+                           += fate-mov-heic-demux-still-image-1-item
 fate-mov-heic-demux-still-image-1-item: CMD = framemd5 -i $(TARGET_SAMPLES)/heif-conformance/C002.heic -c:v copy
 
+FATE_MOV_FFMPEG-$(call FRAMEMD5, MOV, HEVC, HEVC_PARSER) \
+                           += fate-mov-heic-demux-still-image-multiple-items
 fate-mov-heic-demux-still-image-multiple-items: CMD = framemd5 -i $(TARGET_SAMPLES)/heif-conformance/C003.heic -c:v copy
 
 # Resulting remux should have:
@@ -166,13 +170,13 @@ FATE_SAMPLES_FFMPEG_FFPROBE += $(FATE_MOV_FFMPEG_FFPROBE-yes)
 FATE_MOV_FFMPEG-$(call TRANSCODE, PCM_S16LE, MOV, WAV_DEMUXER PAN_FILTER) \
                           += fate-mov-channel-description
 fate-mov-channel-description: tests/data/asynth-44100-1.wav tests/data/filtergraphs/mov-channel-description
-fate-mov-channel-description: CMD = transcode wav $(TARGET_PATH)/tests/data/asynth-44100-1.wav mov "-filter_complex_script $(TARGET_PATH)/tests/data/filtergraphs/mov-channel-description -map [outFL] -map [outFR] -map [outFC] -map [outLFE] -map [outBL] -map [outBR] -map [outDL] -map [outDR] -c:a pcm_s16le" "-map 0 -c copy -frames:a 0"
+fate-mov-channel-description: CMD = transcode wav $(TARGET_PATH)/tests/data/asynth-44100-1.wav mov "-/filter_complex $(TARGET_PATH)/tests/data/filtergraphs/mov-channel-description -map [outFL] -map [outFR] -map [outFC] -map [outLFE] -map [outBL] -map [outBR] -map [outDL] -map [outDR] -c:a pcm_s16le" "-map 0 -c copy -frames:a 0"
 
 # Test PCM in mp4 and channel layout
 FATE_MOV_FFMPEG-$(call TRANSCODE, PCM_S16LE, MOV, WAV_DEMUXER PAN_FILTER) \
                           += fate-mov-mp4-pcm
 fate-mov-mp4-pcm: tests/data/asynth-44100-1.wav tests/data/filtergraphs/mov-mp4-pcm
-fate-mov-mp4-pcm: CMD = transcode wav $(TARGET_PATH)/tests/data/asynth-44100-1.wav mp4 "-filter_complex_script $(TARGET_PATH)/tests/data/filtergraphs/mov-mp4-pcm -map [mono] -map [stereo] -map [2.1] -map [5.1] -map [7.1] -c:a pcm_s16le" "-map 0 -c copy -frames:a 0"
+fate-mov-mp4-pcm: CMD = transcode wav $(TARGET_PATH)/tests/data/asynth-44100-1.wav mp4 "-/filter_complex $(TARGET_PATH)/tests/data/filtergraphs/mov-mp4-pcm -map [mono] -map [stereo] -map [2.1] -map [5.1] -map [7.1] -c:a pcm_s16le" "-map 0 -c copy -frames:a 0"
 
 # Test floating sample format PCM in mp4 and unusual channel layout
 FATE_MOV_FFMPEG-$(call TRANSCODE, PCM_S16LE, MOV, WAV_DEMUXER PAN_FILTER) \
