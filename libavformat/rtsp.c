@@ -1012,8 +1012,8 @@ static void rtsp_parse_transport(AVFormatContext *s,
                 if (*p == '=') {
                     p++;
                     get_word_sep(buf, sizeof(buf), ";, ", &p);
-                    if (!strcmp(buf, "record") ||
-                        !strcmp(buf, "receive"))
+                    if (!av_strcasecmp(buf, "record") ||
+                        !av_strcasecmp(buf, "receive"))
                         th->mode_record = 1;
                 }
             }
@@ -2479,6 +2479,7 @@ static int sdp_read_close(AVFormatContext *s)
 
 static const AVClass sdp_demuxer_class = {
     .class_name     = "SDP demuxer",
+    .item_name      = av_default_item_name,
     .option         = sdp_options,
     .version        = LIBAVUTIL_VERSION_INT,
 };
@@ -2637,6 +2638,7 @@ fail:
 
 static const AVClass rtp_demuxer_class = {
     .class_name     = "RTP demuxer",
+    .item_name      = av_default_item_name,
     .option         = rtp_options,
     .version        = LIBAVUTIL_VERSION_INT,
 };

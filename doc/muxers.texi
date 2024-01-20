@@ -49,10 +49,15 @@ aptX (Audio Processing Technology for Bluetooth)
 aptX HD (Audio Processing Technology for Bluetooth) audio
 
 @item avs2 @emph{video} (avs, avs2)
-AVS2-P2/IEEE1857.4 video.
+AVS2-P2 (Audio Video Standard - Second generation - Part 2) /
+IEEE 1857.4 video
+
+@item avs3 @emph{video} (avs3)
+AVS3-P2 (Audio Video Standard - Third generation - Part 2) /
+IEEE 1857.10 video
 
 @item cavsvideo @emph{video} (cavs)
-Chinese AVS (Audio Video Standard)
+Chinese AVS (Audio Video Standard - First generation)
 
 @item codec2raw @emph{audio}
 Codec 2 audio.
@@ -177,7 +182,7 @@ ffplay -video_size 1920x1080 -pixel_format rgb24 -f rawvideo testsrc.rgb
 @end example
 @end itemize
 
-@section RAW PCM muxers
+@section Raw PCM muxers
 This section covers raw PCM (Pulse-Code Modulation) audio muxers.
 
 They accept a single stream matching the designated codec. They do not
@@ -528,7 +533,7 @@ skip writing iods atom (default value is @code{true})
 @item use_editlist @var{bool}
 use edit list (default value is @code{auto})
 
-@item use_stream_ids_as_track_ids
+@item use_stream_ids_as_track_ids @var{bool}
 use stream ids as track ids (default value is @code{false})
 
 @item video_track_timescale @var{scale}
@@ -763,17 +768,55 @@ default is @code{false}, otherwise they are cached until the expected
 time event is found.
 @end table
 
-@anchor{avi}
-@section avi
+@section ast
+AST (Audio Stream) muxer.
 
-Audio Video Interleaved muxer.
+This format is used to play audio on some Nintendo Wii games.
+
+It accepts a single audio stream.
+
+The @option{loopstart} and @option{loopend} options can be used to
+define a section of the file to loop for players honoring such
+options.
 
 @subsection Options
-
-It accepts the following options:
-
 @table @option
-@item reserve_index_space
+@item loopstart @var{start}
+Specify loop start position expressesd in milliseconds, from @code{-1}
+to @code{INT_MAX}, in case @code{-1} is set then no loop is specified
+(default -1) and the @option{loopend} value is ignored.
+
+@item loopend @var{end}
+Specify loop end position expressed in milliseconds, from @code{0} to
+@code{INT_MAX}, default is @code{0}, in case @code{0} is set it
+assumes the total stream duration.
+@end table
+
+@section au
+SUN AU audio muxer.
+
+It accepts a single audio stream.
+
+@anchor{avi}
+@section avi
+Audio Video Interleaved muxer.
+
+AVI is a proprietary format developed by Microsoft, and later formally specified
+through the Open DML specification.
+
+Because of differences in players implementations, it might be required to set
+some options to make sure that the generated output can be correctly played by
+the target player.
+
+@subsection Options
+@table @option
+@item flipped_raw_rgb @var{bool}
+If set to @code{true}, store positive height for raw RGB bitmaps, which
+indicates bitmap is stored bottom-up. Note that this option does not flip the
+bitmap which has to be done manually beforehand, e.g. by using the @samp{vflip}
+filter. Default is @code{false} and indicates bitmap is stored top down.
+
+@item reserve_index_space @var{size}
 Reserve the specified amount of bytes for the OpenDML master index of each
 stream within the file header. By default additional master indexes are
 embedded within the data packets if there is no space left in the first master
@@ -786,65 +829,109 @@ The required index space depends on the output file size and should be about 16
 bytes per gigabyte. When this option is omitted or set to zero the necessary
 index space is guessed.
 
-@item write_channel_mask
+Default value is @code{0}.
+
+@item write_channel_mask @var{bool}
 Write the channel layout mask into the audio stream header.
 
 This option is enabled by default. Disabling the channel mask can be useful in
 specific scenarios, e.g. when merging multiple audio streams into one for
 compatibility with software that only supports a single audio stream in AVI
 (see @ref{amerge,,the "amerge" section in the ffmpeg-filters manual,ffmpeg-filters}).
-
-@item flipped_raw_rgb
-If set to true, store positive height for raw RGB bitmaps, which indicates
-bitmap is stored bottom-up. Note that this option does not flip the bitmap
-which has to be done manually beforehand, e.g. by using the vflip filter.
-Default is @var{false} and indicates bitmap is stored top down.
-
 @end table
+
+@section avif
+AV1 (Alliance for Open Media Video codec 1) image format muxer.
+
+This muxers stores images encoded using the AV1 codec.
+
+It accepts one or two video streams. In case two video streams are
+provided, the second one shall contain a single plane storing the
+alpha mask.
+
+In case more than one image is provided, the generated output is
+considered an animated AVIF and the number of loops can be specified
+with the @option{loop} option.
+
+This is based on the specification by Alliance for Open Media at url
+@url{https://aomediacodec.github.io/av1-avif}.
+
+@subsection Options
+@table @option
+@item loop @var{count}
+number of times to loop an animated AVIF, @code{0} specify an infinite
+loop, default is @code{0}
+
+@item movie_timescale @var{timescale}
+Set the timescale written in the movie header box (@code{mvhd}).
+Range is 1 to INT_MAX. Default is @code{1000}.
+@end table
+
+@section avm2
+ShockWave Flash (SWF) / ActionScript Virtual Machine 2 (AVM2) format muxer.
+
+It accepts one audio stream, one video stream, or both.
+
+@section bit
+G.729 (.bit) file format muxer.
+
+It accepts a single G.729 audio stream.
+
+@section caf
+Apple CAF (Core Audio Format) muxer.
+
+It accepts a single audio stream.
+
+@section codec2
+Codec2 audio audio muxer.
+
+It accepts a single codec2 audio stream.
 
 @anchor{chromaprint}
 @section chromaprint
+Chromaprint fingerprinter muxers.
 
-Chromaprint fingerprinter.
+To enable compilation of this filter you need to configure FFmpeg with
+@code{--enable-chromaprint}.
 
-This muxer feeds audio data to the Chromaprint library,
-which generates a fingerprint for the provided audio data. See @url{https://acoustid.org/chromaprint}
+This muxer feeds audio data to the Chromaprint library, which
+generates a fingerprint for the provided audio data. See:
+@url{https://acoustid.org/chromaprint}
 
-It takes a single signed native-endian 16-bit raw audio stream of at most 2 channels.
+It takes a single signed native-endian 16-bit raw audio stream of at
+most 2 channels.
 
 @subsection Options
-
 @table @option
-@item silence_threshold
-Threshold for detecting silence. Range is from -1 to 32767, where -1 disables
-silence detection. Silence detection can only be used with version 3 of the
-algorithm.
-Silence detection must be disabled for use with the AcoustID service. Default is -1.
+@item algorithm @var{version}
+Select version of algorithm to fingerprint with. Range is @code{0} to
+@code{4}. Version @code{3} enables silence detection. Default is @code{1}.
 
-@item algorithm
-Version of algorithm to fingerprint with. Range is 0 to 4.
-Version 3 enables silence detection. Default is 1.
-
-@item fp_format
+@item fp_format @var{format}
 Format to output the fingerprint as. Accepts the following options:
 @table @samp
-@item raw
-Binary raw fingerprint
+@item base64
+Base64 compressed fingerprint @emph{(default)}
 
 @item compressed
 Binary compressed fingerprint
 
-@item base64
-Base64 compressed fingerprint @emph{(default)}
-
+@item raw
+Binary raw fingerprint
 @end table
 
+@item silence_threshold @var{threshold}
+Threshold for detecting silence. Range is from @code{-1} to
+@code{32767}, where @code{-1} disables silence detection. Silence
+detection can only be used with version @code{3} of the algorithm.
+
+Silence detection must be disabled for use with the AcoustID
+service. Default is @code{-1}.
 @end table
 
 @anchor{crc}
 @section crc
-
-CRC (Cyclic Redundancy Check) testing format.
+CRC (Cyclic Redundancy Check) muxer.
 
 This muxer computes and prints the Adler-32 CRC of all the input audio
 and video frames. By default audio frames are converted to signed
@@ -858,25 +945,29 @@ CRC=0x@var{CRC}, where @var{CRC} is a hexadecimal number 0-padded to
 See also the @ref{framecrc} muxer.
 
 @subsection Examples
-
-For example to compute the CRC of the input, and store it in the file
-@file{out.crc}:
+@itemize
+@item
+Use @command{ffmpeg} to compute the CRC of the input, and store it in
+the file @file{out.crc}:
 @example
 ffmpeg -i INPUT -f crc out.crc
 @end example
 
-You can print the CRC to stdout with the command:
+@item
+Use @command{ffmpeg} to print the CRC to stdout with the command:
 @example
 ffmpeg -i INPUT -f crc -
 @end example
 
+@item
 You can select the output format of each frame with @command{ffmpeg} by
-specifying the audio and video codec and format. For example to
+specifying the audio and video codec and format. For example, to
 compute the CRC of the input audio converted to PCM unsigned 8-bit
 and the input video converted to MPEG-2 video, use the command:
 @example
 ffmpeg -i INPUT -c:a pcm_u8 -c:v mpeg2video -f crc -
 @end example
+@end itemize
 
 @anchor{dash}
 @section dash
@@ -2015,7 +2106,6 @@ If a PNG image is used, it must use the rgba pixel format
 
 @anchor{image2}
 @section image2
-
 Image file muxer.
 
 The image file muxer writes video frames to image files.
@@ -2549,6 +2639,28 @@ Setting it to different and sufficiently large values ensures that the produced
 ogg files can be safely chained.
 
 @end table
+
+@anchor{rcwt}
+@section rcwt
+
+Raw Captions With Time (RCWT) is a format native to ccextractor, a commonly
+used open source tool for processing 608/708 closed caption (CC) sources.
+It can be used to archive the original, raw CC bitstream and to produce
+a source file for later CC processing or conversion. As a result,
+it also allows for interopability with ccextractor for processing CC data
+extracted via ffmpeg. The format is simple to parse and can be used
+to retain all lines and variants of CC.
+
+This muxer implements the specification as of 2024-01-05, which has
+been stable and unchanged for 10 years as of this writing.
+
+This muxer will have some nuances from the way that ccextractor muxes RCWT.
+No compatibility issues when processing the output with ccextractor
+have been observed as a result of this so far, but mileage may vary
+and outputs will not be a bit-exact match.
+
+A free specification of RCWT can be found here:
+@url{https://github.com/CCExtractor/ccextractor/blob/master/docs/BINARY_FILE_FORMAT.TXT}
 
 @anchor{segment}
 @section segment, stream_segment, ssegment
