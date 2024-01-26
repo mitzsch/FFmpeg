@@ -1487,7 +1487,6 @@ static void mxf_write_jpeg2000_subdesc(AVFormatContext *s, AVStream *st)
     AVIOContext *pb = s->pb;
     int64_t pos;
     int component_count = av_pix_fmt_count_planes(st->codecpar->format);
-    int comp = 0;
 
     /* JPEG2000 subdescriptor key */
     avio_write(pb, mxf_jpeg2000_subdescriptor_key, 16);
@@ -2640,11 +2639,9 @@ static int mxf_parse_jpeg2000_frame(AVFormatContext *s, AVStream *st, AVPacket *
 {
     MXFContext *mxf = s->priv_data;
     MXFStreamContext *sc = st->priv_data;
-    AVIOContext *pb = s->pb;
     int component_count = av_pix_fmt_count_planes(st->codecpar->format);
     GetByteContext g;
     uint32_t j2k_ncomponents;
-    int comp;
 
     if (mxf->header_written)
         return 1;
@@ -2656,13 +2653,13 @@ static int mxf_parse_jpeg2000_frame(AVFormatContext *s, AVStream *st, AVPacket *
 
     if (bytestream2_get_be16u(&g) != JPEG2000_SOC) {
         av_log(s, AV_LOG_ERROR, "Mandatory SOC marker is not present\n");
-        return AVERROR(AVERROR_INVALIDDATA);
+        return AVERROR_INVALIDDATA;
     }
 
     /* Extract usefull size information from the SIZ marker */
     if (bytestream2_get_be16u(&g) != JPEG2000_SIZ) {
         av_log(s, AV_LOG_ERROR, "Mandatory SIZ marker is not present\n");
-        return AVERROR(AVERROR_INVALIDDATA);
+        return AVERROR_INVALIDDATA;
     }
     bytestream2_skip(&g, 2); // Skip Lsiz
     sc->j2k_info.j2k_cap = bytestream2_get_be16u(&g);
@@ -2677,7 +2674,7 @@ static int mxf_parse_jpeg2000_frame(AVFormatContext *s, AVStream *st, AVPacket *
     j2k_ncomponents = bytestream2_get_be16u(&g);
     if (j2k_ncomponents != component_count) {
         av_log(s, AV_LOG_ERROR, "Incoherence about components image number.\n");
-        return AVERROR(AVERROR_INVALIDDATA);
+        return AVERROR_INVALIDDATA;
     }
     bytestream2_get_bufferu(&g, sc->j2k_info.j2k_comp_desc, 3 * j2k_ncomponents);
 

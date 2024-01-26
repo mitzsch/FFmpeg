@@ -60,7 +60,7 @@ static av_always_inline void mv_compression(Mv *motion)
     for (int i = 0; i < 2; i++) {
         const int s = mv[i] >> 17;
         const int f = av_log2((mv[i] ^ s) | 31) - 4;
-        const int mask  = (-1 << f) >> 1;
+        const int mask  = (-1 * (1 << f)) >> 1;
         const int round = (1 << f) >> 2;
         mv[i] = (mv[i] + round) & mask;
     }
@@ -342,17 +342,17 @@ static void init_subblock_params(SubblockParams *sp, const MotionInfo* mi,
     const int log2_cbh  = av_log2(cb_height);
     const Mv* cp_mv     = mi->mv[lx];
     const int num_cp_mv = mi->motion_model_idc + 1;
-    sp->d_hor_x = (cp_mv[1].x - cp_mv[0].x) << (MAX_CU_DEPTH - log2_cbw);
-    sp->d_ver_x = (cp_mv[1].y - cp_mv[0].y) << (MAX_CU_DEPTH - log2_cbw);
+    sp->d_hor_x = (cp_mv[1].x - cp_mv[0].x) * (1 << (MAX_CU_DEPTH - log2_cbw));
+    sp->d_ver_x = (cp_mv[1].y - cp_mv[0].y) * (1 << (MAX_CU_DEPTH - log2_cbw));
     if (num_cp_mv == 3) {
-        sp->d_hor_y = (cp_mv[2].x - cp_mv[0].x) << (MAX_CU_DEPTH - log2_cbh);
-        sp->d_ver_y = (cp_mv[2].y - cp_mv[0].y) << (MAX_CU_DEPTH - log2_cbh);
+        sp->d_hor_y = (cp_mv[2].x - cp_mv[0].x) * (1 << (MAX_CU_DEPTH - log2_cbh));
+        sp->d_ver_y = (cp_mv[2].y - cp_mv[0].y) * (1 << (MAX_CU_DEPTH - log2_cbh));
     } else {
         sp->d_hor_y = -sp->d_ver_x;
         sp->d_ver_y = sp->d_hor_x;
     }
-    sp->mv_scale_hor = (cp_mv[0].x) << MAX_CU_DEPTH;
-    sp->mv_scale_ver = (cp_mv[0].y) << MAX_CU_DEPTH;
+    sp->mv_scale_hor = (cp_mv[0].x) * (1 << MAX_CU_DEPTH);
+    sp->mv_scale_ver = (cp_mv[0].y) * (1 << MAX_CU_DEPTH);
     sp->cb_width  = cb_width;
     sp->cb_height = cb_height;
     sp->is_fallback = is_fallback_mode(sp, mi->pred_flag);
@@ -367,12 +367,12 @@ static void derive_subblock_diff_mvs(const VVCLocalContext *lc, PredictionUnit* 
         const int pos_offset_y = 6 * (sp->d_ver_x + sp->d_ver_y);
         for (int x = 0; x < AFFINE_MIN_BLOCK_SIZE; x++) {
             for (int y = 0; y < AFFINE_MIN_BLOCK_SIZE; y++) {
-                Mv diff;
-                diff.x = x * (sp->d_hor_x << 2) + y * (sp->d_hor_y << 2) - pos_offset_x;
-                diff.y = x * (sp->d_ver_x << 2) + y * (sp->d_ver_y << 2) - pos_offset_y;
-                ff_vvc_round_mv(&diff, 0, 8);
-                pu->diff_mv_x[lx][AFFINE_MIN_BLOCK_SIZE * y + x] = av_clip(diff.x, -dmv_limit + 1, dmv_limit - 1);
-                pu->diff_mv_y[lx][AFFINE_MIN_BLOCK_SIZE * y + x] = av_clip(diff.y, -dmv_limit + 1, dmv_limit - 1);
+                LOCAL_ALIGNED_8(Mv, diff, [1]);
+                diff->x = x * (sp->d_hor_x * (1 << 2)) + y * (sp->d_hor_y * (1 << 2)) - pos_offset_x;
+                diff->y = x * (sp->d_ver_x * (1 << 2)) + y * (sp->d_ver_y * (1 << 2)) - pos_offset_y;
+                ff_vvc_round_mv(diff, 0, 8);
+                pu->diff_mv_x[lx][AFFINE_MIN_BLOCK_SIZE * y + x] = av_clip(diff->x, -dmv_limit + 1, dmv_limit - 1);
+                pu->diff_mv_y[lx][AFFINE_MIN_BLOCK_SIZE * y + x] = av_clip(diff->y, -dmv_limit + 1, dmv_limit - 1);
             }
         }
     }
@@ -467,8 +467,8 @@ void ff_vvc_store_gpm_mvf(const VVCLocalContext *lc, const PredictionUnit *pu)
 
     for (int y = 0; y < cu->cb_height; y += block_size) {
         for (int x = 0; x < cu->cb_width; x += block_size) {
-            const int motion_idx = (((x + offset_x) << 1) + 5) * displacement_x +
-                (((y + offset_y) << 1) + 5) * displacement_y;
+            const int motion_idx = (((x + offset_x) * (1 << 1)) + 5) * displacement_x +
+                (((y + offset_y) * (1 << 1)) + 5) * displacement_y;
             const int s_type = FFABS(motion_idx) < 32 ? 2 : (motion_idx <= 0 ? (1 - is_flip) : is_flip);
             const int pred_flag = pu->gpm_mv[0].pred_flag | pu->gpm_mv[1].pred_flag;
             const int x0 = cu->x0 + x;
@@ -867,14 +867,14 @@ static void affine_cps_from_nb(const VVCLocalContext *lc,
         l = &TAB_CP_MV(lx, x_nb, y_nb);
         r = &TAB_CP_MV(lx, x_nb + nbw - 1, y_nb) + 1;
     }
-    mv_scale_hor = l->x << 7;
-    mv_scale_ver = l->y << 7;
-    d_hor_x = (r->x - l->x) << (7 - log2_nbw);
-    d_ver_x = (r->y - l->y) << (7 - log2_nbw);
+    mv_scale_hor = l->x * (1 << 7);
+    mv_scale_ver = l->y * (1 << 7);
+    d_hor_x = (r->x - l->x) * (1 << (7 - log2_nbw));
+    d_ver_x = (r->y - l->y) * (1 << (7 - log2_nbw));
     if (!is_ctb_boundary && motion_model_idc_nb == MOTION_6_PARAMS_AFFINE) {
         const Mv* lb = &TAB_CP_MV(lx, x_nb, y_nb + nbh - 1) + 2;
-        d_hor_y = (lb->x - l->x) << (7 - log2_nbh);
-        d_ver_y = (lb->y - l->y) << (7 - log2_nbh);
+        d_hor_y = (lb->x - l->x) * (1 << (7 - log2_nbh));
+        d_ver_y = (lb->y - l->y) * (1 << (7 - log2_nbh));
     } else {
         d_hor_y = -d_ver_x;
         d_ver_y = d_hor_x;
@@ -1046,7 +1046,6 @@ static int sb_temporal_luma_motion_data(const VVCLocalContext *lc, const MvField
 
     colPic  = ref->poc;
 
-    AV_ZERO64(temp_mv);
     if (a1) {
         if ((a1->pred_flag & PF_L0) && colPic == rpl[0].list[a1->ref_idx[0]])
             *temp_mv = a1->mv[0];
@@ -1074,7 +1073,7 @@ static int sb_temporal_merge_candidate(const VVCLocalContext* lc, NeighbourConte
     const NeighbourIdx n        = A1;
     const MvField *a1;
     MvField ctr_mvf;
-    Mv temp_mv;
+    LOCAL_ALIGNED_8(Mv, temp_mv, [1]);
     const int x_ctb = (x0 >> ctb_log2_size) << ctb_log2_size;
     const int y_ctb = (y0 >> ctb_log2_size) << ctb_log2_size;
 
@@ -1088,7 +1087,7 @@ static int sb_temporal_merge_candidate(const VVCLocalContext* lc, NeighbourConte
     mi->num_sb_y = cu->cb_height >> 3;
 
     a1 = derive_corner_mvf(nctx, &n, 1);
-    if (sb_temporal_luma_motion_data(lc, a1, x_ctb, y_ctb, &ctr_mvf, &temp_mv)) {
+    if (sb_temporal_luma_motion_data(lc, a1, x_ctb, y_ctb, &ctr_mvf, temp_mv)) {
         const int sbw = cu->cb_width / mi->num_sb_x;
         const int sbh = cu->cb_height / mi->num_sb_y;
         MvField mvf = {0};
@@ -1096,7 +1095,7 @@ static int sb_temporal_merge_candidate(const VVCLocalContext* lc, NeighbourConte
             for (int sbx = 0; sbx < mi->num_sb_x; sbx++) {
                 int x = x0 + sbx * sbw;
                 int y = y0 + sby * sbh;
-                sb_temproal_luma_motion(lc, x_ctb, y_ctb, &temp_mv, x + sbw / 2, y +  sbh / 2, &mvf.pred_flag, mvf.mv);
+                sb_temproal_luma_motion(lc, x_ctb, y_ctb, temp_mv, x + sbw / 2, y +  sbh / 2, &mvf.pred_flag, mvf.mv);
                 if (!mvf.pred_flag) {
                     mvf.pred_flag = ctr_mvf.pred_flag;
                     memcpy(mvf.mv, ctr_mvf.mv, sizeof(mvf.mv));
@@ -1242,8 +1241,8 @@ static int affine_merge_const6(const MvField* c0, const MvField* c2, const int c
                 mi->pred_flag |= mask;
                 mi->ref_idx[i] = c0->ref_idx[i];
                 mi->mv[i][0] = c0->mv[i];
-                mi->mv[i][1].x = (c0->mv[i].x << 7) + ((c2->mv[i].y - c0->mv[i].y) << shift);
-                mi->mv[i][1].y = (c0->mv[i].y << 7) - ((c2->mv[i].x - c0->mv[i].x) << shift);
+                mi->mv[i][1].x = (c0->mv[i].x * (1 << 7)) + ((c2->mv[i].y - c0->mv[i].y) * (1 << shift));
+                mi->mv[i][1].y = (c0->mv[i].y * (1 << 7)) - ((c2->mv[i].x - c0->mv[i].x) * (1 << shift));
                 ff_vvc_round_mv(&mi->mv[i][1], 0, 7);
                 ff_vvc_clip_mv(&mi->mv[i][1]);
             }
@@ -1497,7 +1496,7 @@ static int mvp_spatial_candidates(const VVCLocalContext *lc,
     const NeighbourIdx bk[] = { B0, B1, B2 };
     NeighbourContext nctx;
     int available_a, num_cands = 0;
-    Mv  mv_a;
+    LOCAL_ALIGNED_8(Mv, mv_a, [1]);
 
     init_neighbour_context(&nctx, lc);
 
@@ -1506,10 +1505,10 @@ static int mvp_spatial_candidates(const VVCLocalContext *lc,
         if (mvp_lx_flag == num_cands)
             return 1;
         num_cands++;
-        mv_a = *mv;
+        *mv_a = *mv;
     }
     if (MVP_FROM_NBS(bk)) {
-        if (!available_a || !IS_SAME_MV(&mv_a, mv)) {
+        if (!available_a || !IS_SAME_MV(mv_a, mv)) {
             if (mvp_lx_flag == num_cands)
                 return 1;
             num_cands++;
@@ -1736,11 +1735,11 @@ void ff_vvc_round_mv(Mv *mv, const int lshift, const int rshift)
 {
     if (rshift) {
         const int offset = 1 << (rshift - 1);
-        mv->x = ((mv->x + offset - (mv->x >= 0)) >> rshift) << lshift;
-        mv->y = ((mv->y + offset - (mv->y >= 0)) >> rshift) << lshift;
+        mv->x = ((mv->x + offset - (mv->x >= 0)) >> rshift) * (1 << lshift);
+        mv->y = ((mv->y + offset - (mv->y >= 0)) >> rshift) * (1 << lshift);
     } else {
-        mv->x = mv->x << lshift;
-        mv->y = mv->y << lshift;
+        mv->x = mv->x * (1 << lshift);
+        mv->y = mv->y * (1 << lshift);
     }
 }
 
