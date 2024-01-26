@@ -2025,6 +2025,8 @@ static int of_parse_iamf_audio_element_layers(Muxer *mux, AVStreamGroup *stg, ch
         int demixing = 0, recon_gain = 0;
         int layer = 0;
 
+        if (ptr)
+            ptr += strspn(ptr, " \n\t\r");
         if (av_strstart(token, "layer=", &token))
             layer = 1;
         else if (av_strstart(token, "demixing=", &token))
@@ -2092,6 +2094,8 @@ static int of_parse_iamf_submixes(Muxer *mux, AVStreamGroup *stg, char *ptr)
         const char *subtoken;
         char *subptr = NULL;
 
+        if (ptr)
+            ptr += strspn(ptr, " \n\t\r");
         if (!av_strstart(token, "submix=", &token)) {
             av_log(mux, AV_LOG_ERROR, "No submix in mix presentation specification \"%s\"\n", token);
             goto fail;
@@ -2120,6 +2124,8 @@ static int of_parse_iamf_submixes(Muxer *mux, AVStreamGroup *stg, char *ptr)
             const AVDictionaryEntry *e;
             int element = 0, layout = 0;
 
+            if (subptr)
+                subptr += strspn(subptr, " \n\t\r");
             if (av_strstart(subtoken, "element=", &subtoken))
                 element = 1;
             else if (av_strstart(subtoken, "layout=", &subtoken))
@@ -2139,7 +2145,6 @@ static int of_parse_iamf_submixes(Muxer *mux, AVStreamGroup *stg, char *ptr)
 
                 if (e = av_dict_get(dict, "stg", NULL, 0))
                     idx = strtoll(e->value, &endptr, 0);
-                av_dict_set(&dict, "stg", NULL, 0);
                 if (!endptr || *endptr || idx < 0 || idx >= oc->nb_stream_groups - 1 ||
                     oc->stream_groups[idx]->type != AV_STREAM_GROUP_PARAMS_IAMF_AUDIO_ELEMENT) {
                     av_log(mux, AV_LOG_ERROR, "Invalid or missing stream group index in "
@@ -2160,6 +2165,7 @@ static int of_parse_iamf_submixes(Muxer *mux, AVStreamGroup *stg, char *ptr)
                     av_iamf_param_definition_alloc(AV_IAMF_PARAMETER_DEFINITION_MIX_GAIN, 0, NULL);
                 if (!submix_element->element_mix_config)
                     ret = AVERROR(ENOMEM);
+                av_dict_set(&dict, "stg", NULL, 0);
                 av_opt_set_dict2(submix_element, &dict, AV_OPT_SEARCH_CHILDREN);
             } else if (layout) {
                 AVIAMFSubmixLayout *submix_layout = av_iamf_submix_add_layout(submix);
@@ -2331,8 +2337,11 @@ static int of_add_groups(Muxer *mux, const OptionsContext *o)
             return ret;
 
         token = av_strtok(str, ",", &ptr);
-        if (token)
+        if (token) {
+            if (ptr)
+                ptr += strspn(ptr, " \n\t\r");
             ret = of_parse_group_token(mux, token, ptr);
+        }
 
         av_free(str);
         if (ret < 0)
