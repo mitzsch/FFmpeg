@@ -81,6 +81,7 @@ typedef struct MOVParseTableEntry {
 
 static int mov_read_default(MOVContext *c, AVIOContext *pb, MOVAtom atom);
 static int mov_read_mfra(MOVContext *c, AVIOContext *f);
+static void mov_free_stream_context(AVFormatContext *s, AVStream *st);
 static int64_t add_ctts_entry(MOVCtts** ctts_data, unsigned int* ctts_count, unsigned int* allocated_size,
                               int count, int duration);
 
@@ -4644,6 +4645,23 @@ static int mov_read_trak(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     MOVStreamContext *sc;
     int ret;
 
+    if (c->found_iinf) {
+        // * For animated heif, if the iinf box showed up before the moov
+        //   box, we need to clear all the streams read in the former.
+        for (int i = c->heif_info_size - 1; i >= 0; i--) {
+            HEIFItem *item = &c->heif_info[i];
+
+            if (!item->st)
+                continue;
+
+            mov_free_stream_context(c->fc, item->st);
+            ff_remove_stream(c->fc, item->st);
+        }
+        av_freep(&c->heif_info);
+        c->heif_info_size = 0;
+        c->found_iinf = c->found_iloc = 0;
+    }
+
     st = avformat_new_stream(c->fc, NULL);
     if (!st) return AVERROR(ENOMEM);
     st->id = -1;
@@ -7773,8 +7791,9 @@ static int mov_read_iloc(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     uint64_t base_offset, extent_offset, extent_length;
     uint8_t value;
 
-    if (c->found_iloc) {
-        av_log(c->fc, AV_LOG_INFO, "Duplicate iloc box found\n");
+    if (c->found_moov) {
+        // * For animated heif, we don't care about the iloc box as all the
+        //   necessary information can be found in the moov box.
         return 0;
     }
 
@@ -7896,6 +7915,16 @@ static int mov_read_iinf(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     int entry_count;
     int version, ret;
 
+    if (c->found_iinf) {
+        av_log(c->fc, AV_LOG_WARNING, "Duplicate iinf box found\n");
+        return 0;
+    }
+    if (c->found_moov) {
+        // * For animated heif, we don't care about the iinf box as all the
+        //   necessary information can be found in the moov box.
+        return 0;
+    }
+
     version = avio_r8(pb);
     avio_rb24(pb);  // flags.
     entry_count = version ? avio_rb32(pb) : avio_rb16(pb);
@@ -7919,6 +7948,7 @@ static int mov_read_iinf(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             return ret;
     }
 
+    c->found_iinf = 1;
     return 0;
 }
 
@@ -7932,6 +7962,13 @@ static int mov_read_iref(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 static int mov_read_ispe(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 {
     uint32_t width, height;
+
+    if (c->found_moov) {
+        // * For animated heif, we don't care about the ispe box as all the
+        //   necessary information can be found in the moov box.
+        return 0;
+    }
+
     avio_r8(pb);  /* version */
     avio_rb24(pb);  /* flags */
     width  = avio_rb32(pb);
@@ -7965,6 +8002,12 @@ static int mov_read_iprp(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     int nb_atoms = 0;
     int version, flags;
     int ret;
+
+    if (c->found_moov) {
+        // * For animated heif, we don't care about the iprp box as all the
+        //   necessary information can be found in the moov box.
+        return 0;
+    }
 
     a.size = avio_rb32(pb);
     a.type = avio_rl32(pb);
@@ -8587,6 +8630,58 @@ static void mov_free_encryption_index(MOVEncryptionIndex **index) {
     av_freep(index);
 }
 
+static void mov_free_stream_context(AVFormatContext *s, AVStream *st)
+{
+    MOVStreamContext *sc = st->priv_data;
+
+    if (!sc)
+        return;
+
+    av_freep(&sc->ctts_data);
+    for (int i = 0; i < sc->drefs_count; i++) {
+        av_freep(&sc->drefs[i].path);
+        av_freep(&sc->drefs[i].dir);
+    }
+    av_freep(&sc->drefs);
+
+    sc->drefs_count = 0;
+
+    if (!sc->pb_is_copied)
+        ff_format_io_close(s, &sc->pb);
+
+    sc->pb = NULL;
+    av_freep(&sc->chunk_offsets);
+    av_freep(&sc->stsc_data);
+    av_freep(&sc->sample_sizes);
+    av_freep(&sc->keyframes);
+    av_freep(&sc->stts_data);
+    av_freep(&sc->sdtp_data);
+    av_freep(&sc->stps_data);
+    av_freep(&sc->elst_data);
+    av_freep(&sc->rap_group);
+    av_freep(&sc->sync_group);
+    av_freep(&sc->sgpd_sync);
+    av_freep(&sc->sample_offsets);
+    av_freep(&sc->open_key_samples);
+    av_freep(&sc->display_matrix);
+    av_freep(&sc->index_ranges);
+
+    if (sc->extradata)
+        for (int i = 0; i < sc->stsd_count; i++)
+            av_free(sc->extradata[i]);
+    av_freep(&sc->extradata);
+    av_freep(&sc->extradata_size);
+
+    mov_free_encryption_index(&sc->cenc.encryption_index);
+    av_encryption_info_free(sc->cenc.default_encrypted_sample);
+    av_aes_ctr_free(sc->cenc.aes_ctr);
+
+    av_freep(&sc->stereo3d);
+    av_freep(&sc->spherical);
+    av_freep(&sc->mastering);
+    av_freep(&sc->coll);
+}
+
 static int mov_read_close(AVFormatContext *s)
 {
     MOVContext *mov = s->priv_data;
@@ -8594,54 +8689,8 @@ static int mov_read_close(AVFormatContext *s)
 
     for (i = 0; i < s->nb_streams; i++) {
         AVStream *st = s->streams[i];
-        MOVStreamContext *sc = st->priv_data;
 
-        if (!sc)
-            continue;
-
-        av_freep(&sc->ctts_data);
-        for (j = 0; j < sc->drefs_count; j++) {
-            av_freep(&sc->drefs[j].path);
-            av_freep(&sc->drefs[j].dir);
-        }
-        av_freep(&sc->drefs);
-
-        sc->drefs_count = 0;
-
-        if (!sc->pb_is_copied)
-            ff_format_io_close(s, &sc->pb);
-
-        sc->pb = NULL;
-        av_freep(&sc->chunk_offsets);
-        av_freep(&sc->stsc_data);
-        av_freep(&sc->sample_sizes);
-        av_freep(&sc->keyframes);
-        av_freep(&sc->stts_data);
-        av_freep(&sc->sdtp_data);
-        av_freep(&sc->stps_data);
-        av_freep(&sc->elst_data);
-        av_freep(&sc->rap_group);
-        av_freep(&sc->sync_group);
-        av_freep(&sc->sgpd_sync);
-        av_freep(&sc->sample_offsets);
-        av_freep(&sc->open_key_samples);
-        av_freep(&sc->display_matrix);
-        av_freep(&sc->index_ranges);
-
-        if (sc->extradata)
-            for (j = 0; j < sc->stsd_count; j++)
-                av_free(sc->extradata[j]);
-        av_freep(&sc->extradata);
-        av_freep(&sc->extradata_size);
-
-        mov_free_encryption_index(&sc->cenc.encryption_index);
-        av_encryption_info_free(sc->cenc.default_encrypted_sample);
-        av_aes_ctr_free(sc->cenc.aes_ctr);
-
-        av_freep(&sc->stereo3d);
-        av_freep(&sc->spherical);
-        av_freep(&sc->mastering);
-        av_freep(&sc->coll);
+        mov_free_stream_context(s, st);
     }
 
     av_freep(&mov->dv_demux);
