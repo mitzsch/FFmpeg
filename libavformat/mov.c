@@ -4648,8 +4648,8 @@ static int mov_read_trak(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     if (c->found_iinf) {
         // * For animated heif, if the iinf box showed up before the moov
         //   box, we need to clear all the streams read in the former.
-        for (int i = c->heif_info_size - 1; i >= 0; i--) {
-            HEIFItem *item = &c->heif_info[i];
+        for (int i = c->nb_heif_item - 1; i >= 0; i--) {
+            HEIFItem *item = &c->heif_item[i];
 
             if (!item->st)
                 continue;
@@ -4657,8 +4657,8 @@ static int mov_read_trak(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             mov_free_stream_context(c->fc, item->st);
             ff_remove_stream(c->fc, item->st);
         }
-        av_freep(&c->heif_info);
-        c->heif_info_size = 0;
+        av_freep(&c->heif_item);
+        c->nb_heif_item = 0;
         c->found_iinf = c->found_iloc = 0;
     }
 
@@ -6036,6 +6036,31 @@ static int mov_read_clli(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     sc->coll->MaxCLL  = avio_rb16(pb);
     sc->coll->MaxFALL = avio_rb16(pb);
 
+    return 0;
+}
+
+static int mov_read_amve(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    MOVStreamContext *sc;
+    const int illuminance_den = 10000;
+    const int ambient_den = 50000;
+    if (c->fc->nb_streams < 1)
+        return AVERROR_INVALIDDATA;
+    sc = c->fc->streams[c->fc->nb_streams - 1]->priv_data;
+    if (atom.size < 6) {
+        av_log(c->fc, AV_LOG_ERROR, "Empty Ambient Viewing Environment Info box\n");
+        return AVERROR_INVALIDDATA;
+    }
+    if (sc->ambient){
+        av_log(c->fc, AV_LOG_WARNING, "Ignoring duplicate AMVE\n");
+        return 0;
+    }
+    sc->ambient = av_ambient_viewing_environment_alloc(&sc->ambient_size);
+    if (!sc->ambient)
+        return AVERROR(ENOMEM);
+    sc->ambient->ambient_illuminance  = av_make_q(avio_rb32(pb), illuminance_den);
+    sc->ambient->ambient_light_x = av_make_q(avio_rb16(pb), ambient_den);
+    sc->ambient->ambient_light_y = av_make_q(avio_rb16(pb), ambient_den);
     return 0;
 }
 
@@ -7812,11 +7837,11 @@ static int mov_read_iloc(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     }
     item_count = (version < 2) ? avio_rb16(pb) : avio_rb32(pb);
 
-    if (!c->heif_info) {
-        c->heif_info = av_calloc(item_count, sizeof(*c->heif_info));
-        if (!c->heif_info)
+    if (!c->heif_item) {
+        c->heif_item = av_calloc(item_count, sizeof(*c->heif_item));
+        if (!c->heif_item)
             return AVERROR(ENOMEM);
-        c->heif_info_size = item_count;
+        c->nb_heif_item = item_count;
     }
 
     av_log(c->fc, AV_LOG_TRACE, "iloc: item_count %d\n", item_count);
@@ -7830,7 +7855,7 @@ static int mov_read_iloc(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             avpriv_request_sample(c->fc, "iloc offset type %d", offset_type);
             return AVERROR_PATCHWELCOME;
         }
-        c->heif_info[i].item_id = item_id;
+        c->heif_item[i].item_id = item_id;
 
         avio_rb16(pb);  // data_reference_index.
         if (rb_size(pb, &base_offset, base_offset_size) < 0)
@@ -7845,11 +7870,11 @@ static int mov_read_iloc(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             if (rb_size(pb, &extent_offset, offset_size) < 0 ||
                 rb_size(pb, &extent_length, length_size) < 0)
                 return AVERROR_INVALIDDATA;
-            c->heif_info[i].extent_length = extent_length;
-            c->heif_info[i].extent_offset = base_offset + extent_offset;
+            c->heif_item[i].extent_length = extent_length;
+            c->heif_item[i].extent_offset = base_offset + extent_offset;
             av_log(c->fc, AV_LOG_TRACE, "iloc: item_idx %d, offset_type %d, "
                                         "extent_offset %"PRId64", extent_length %"PRId64"\n",
-                   i, offset_type, c->heif_info[i].extent_offset, c->heif_info[i].extent_length);
+                   i, offset_type, c->heif_item[i].extent_offset, c->heif_item[i].extent_length);
         }
     }
 
@@ -7890,13 +7915,13 @@ static int mov_read_infe(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     if (size > 0)
         avio_skip(pb, size);
 
-    c->heif_info[c->cur_item_id].item_id = item_id;
-    c->heif_info[c->cur_item_id].type    = item_type;
+    c->heif_item[c->cur_item_id].item_id = item_id;
+    c->heif_item[c->cur_item_id].type    = item_type;
 
     switch (item_type) {
     case MKTAG('a','v','0','1'):
     case MKTAG('h','v','c','1'):
-        ret = heif_add_stream(c, &c->heif_info[c->cur_item_id]);
+        ret = heif_add_stream(c, &c->heif_item[c->cur_item_id]);
         if (ret < 0)
             return ret;
         break;
@@ -7929,11 +7954,11 @@ static int mov_read_iinf(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     avio_rb24(pb);  // flags.
     entry_count = version ? avio_rb32(pb) : avio_rb16(pb);
 
-    if (!c->heif_info) {
-        c->heif_info = av_calloc(entry_count, sizeof(*c->heif_info));
-        if (!c->heif_info)
+    if (!c->heif_item) {
+        c->heif_item = av_calloc(entry_count, sizeof(*c->heif_item));
+        if (!c->heif_item)
             return AVERROR(ENOMEM);
-        c->heif_info_size = entry_count;
+        c->nb_heif_item = entry_count;
     }
 
     c->cur_item_id = 0;
@@ -7977,10 +8002,10 @@ static int mov_read_ispe(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     av_log(c->fc, AV_LOG_TRACE, "ispe: item_id %d, width %u, height %u\n",
            c->cur_item_id, width, height);
 
-    for (int i = 0; i < c->heif_info_size; i++) {
-        if (c->heif_info[i].item_id == c->cur_item_id) {
-            c->heif_info[i].width  = width;
-            c->heif_info[i].height = height;
+    for (int i = 0; i < c->nb_heif_item; i++) {
+        if (c->heif_item[i].item_id == c->cur_item_id) {
+            c->heif_item[i].width  = width;
+            c->heif_item[i].height = height;
             break;
         }
     }
@@ -8215,6 +8240,7 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
 { MKTAG('i','s','p','e'), mov_read_ispe },
 { MKTAG('i','p','r','p'), mov_read_iprp },
 { MKTAG('i','i','n','f'), mov_read_iinf },
+{ MKTAG('a','m','v','e'), mov_read_amve }, /* ambient viewing environment box */
 { 0, NULL }
 };
 
@@ -8680,6 +8706,7 @@ static void mov_free_stream_context(AVFormatContext *s, AVStream *st)
     av_freep(&sc->spherical);
     av_freep(&sc->mastering);
     av_freep(&sc->coll);
+    av_freep(&sc->ambient);
 }
 
 static int mov_read_close(AVFormatContext *s)
@@ -8718,7 +8745,7 @@ static int mov_read_close(AVFormatContext *s)
 
     av_freep(&mov->aes_decrypt);
     av_freep(&mov->chapter_tracks);
-    av_freep(&mov->heif_info);
+    av_freep(&mov->heif_item);
 
     return 0;
 }
@@ -8896,8 +8923,8 @@ static int mov_read_header(AVFormatContext *s)
     av_log(mov->fc, AV_LOG_TRACE, "on_parse_exit_offset=%"PRId64"\n", avio_tell(pb));
 
     if (mov->found_iloc) {
-        for (i = 0; i < mov->heif_info_size; i++) {
-            HEIFItem *item = &mov->heif_info[i];
+        for (i = 0; i < mov->nb_heif_item; i++) {
+            HEIFItem *item = &mov->heif_item[i];
             MOVStreamContext *sc;
             AVStream *st;
 
@@ -9071,6 +9098,14 @@ static int mov_read_header(AVFormatContext *s)
                     return AVERROR(ENOMEM);
 
                 sc->coll = NULL;
+            }
+            if (sc->ambient) {
+                if (!av_packet_side_data_add(&st->codecpar->coded_side_data, &st->codecpar->nb_coded_side_data,
+                                             AV_PKT_DATA_AMBIENT_VIEWING_ENVIRONMENT,
+                                             (uint8_t *) sc->ambient, sc->ambient_size, 0))
+                    return AVERROR(ENOMEM);
+
+                sc->ambient = NULL;
             }
             break;
         }
