@@ -955,7 +955,7 @@ static int dxv_decompress_dxt5(AVCodecContext *avctx)
                 break;
             case 2:
                 /* Copy two dwords from a previous index */
-                idx = 8 + bytestream2_get_le16(gbc);
+                idx = 8 + 4 * bytestream2_get_le16(gbc);
                 if (idx > pos || (unsigned int)(pos - idx) + 2 > ctx->tex_size / 4)
                     return AVERROR_INVALIDDATA;
                 prev = AV_RL32(ctx->tex_data + 4 * (pos - idx));
@@ -1074,7 +1074,8 @@ static int dxv_decode(AVCodecContext *avctx, AVFrame *frame,
         break;
     case MKBETAG('D', 'X', 'T', '5'):
         decompress_tex = dxv_decompress_dxt5;
-        ctx->tex_funct = ctx->texdsp.dxt5_block;
+        /* DXV misnomers DXT5, alpha is premultiplied so use DXT4 instead */
+        ctx->tex_funct = ctx->texdsp.dxt4_block;
         ctx->tex_rat   = 4;
         ctx->tex_step  = 16;
         msgcomp = "DXTR5";
