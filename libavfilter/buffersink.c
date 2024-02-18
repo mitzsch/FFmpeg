@@ -30,14 +30,13 @@
 #include "libavutil/internal.h"
 #include "libavutil/opt.h"
 
-#define FF_INTERNAL_FIELDS 1
-#include "framequeue.h"
-
 #include "audio.h"
 #include "avfilter.h"
+#include "avfilter_internal.h"
 #include "buffersink.h"
 #include "filters.h"
 #include "formats.h"
+#include "framequeue.h"
 #include "internal.h"
 #include "video.h"
 
@@ -178,9 +177,10 @@ static void uninit(AVFilterContext *ctx)
 static int activate(AVFilterContext *ctx)
 {
     BufferSinkContext *buf = ctx->priv;
+    FilterLinkInternal * const li = ff_link_internal(ctx->inputs[0]);
 
     if (buf->warning_limit &&
-        ff_framequeue_queued_frames(&ctx->inputs[0]->fifo) >= buf->warning_limit) {
+        ff_framequeue_queued_frames(&li->fifo) >= buf->warning_limit) {
         av_log(ctx, AV_LOG_WARNING,
                "%d buffers queued in %s, something may be wrong.\n",
                buf->warning_limit,
