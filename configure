@@ -2516,6 +2516,8 @@ CONFIG_EXTRA="
     huffman
     huffyuvdsp
     huffyuvencdsp
+    iamfdec
+    iamfenc
     idctdsp
     iirfilter
     inflate_wrapper
@@ -3534,6 +3536,8 @@ gxf_muxer_select="pcm_rechunk_bsf"
 hds_muxer_select="flv_muxer"
 hls_demuxer_select="adts_header ac3_parser mov_demuxer mpegts_demuxer"
 hls_muxer_select="mov_muxer mpegts_muxer"
+iamf_demuxer_select="iamfdec"
+iamf_muxer_select="iamfenc"
 image2_alias_pix_demuxer_select="image2_demuxer"
 image2_brender_pix_demuxer_select="image2_demuxer"
 imf_demuxer_deps="libxml2"
@@ -3548,7 +3552,7 @@ matroska_demuxer_suggest="bzlib zlib"
 matroska_muxer_select="mpeg4audio riffenc aac_adtstoasc_bsf pgs_frame_merge_bsf vp9_superframe_bsf"
 mlp_demuxer_select="mlp_parser"
 mmf_muxer_select="riffenc"
-mov_demuxer_select="iso_media riffdec"
+mov_demuxer_select="iso_media riffdec iamfdec"
 mov_demuxer_suggest="zlib"
 mov_muxer_select="iso_media riffenc rtpenc_chain vp9_superframe_bsf aac_adtstoasc_bsf ac3_parser"
 mp3_demuxer_select="mpegaudio_parser"
@@ -6781,11 +6785,11 @@ enabled libfreetype       && require_pkg_config libfreetype freetype2 "ft2build.
 enabled libfribidi        && require_pkg_config libfribidi fribidi fribidi.h fribidi_version_info
 enabled libharfbuzz       && require_pkg_config libharfbuzz harfbuzz hb.h hb_buffer_create
 enabled libglslang && { check_lib spirv_compiler glslang/Include/glslang_c_interface.h glslang_initialize_process \
-                            -lglslang -lMachineIndependent -lOSDependent -lHLSL -lOGLCompiler -lGenericCodeGen \
+                            -lglslang -lMachineIndependent -lGenericCodeGen \
                             -lSPVRemapper -lSPIRV -lSPIRV-Tools-opt -lSPIRV-Tools -lpthread -lstdc++ -lm ||
                         require spirv_compiler glslang/Include/glslang_c_interface.h glslang_initialize_process \
-                            -lglslang -lOSDependent -lHLSL -lOGLCompiler \
-                            -lSPVRemapper -lSPIRV -lSPIRV-Tools-opt -lSPIRV-Tools -lpthread -lstdc++ -lm; }
+                            -lglslang -lMachineIndependent -lOSDependent -lHLSL -lOGLCompiler -lGenericCodeGen \
+                            -lSPVRemapper -lSPIRV -lSPIRV-Tools-opt -lSPIRV-Tools -lpthread -lstdc++ -lm ; }
 enabled libgme            && { check_pkg_config libgme libgme gme/gme.h gme_new_emu ||
                                require libgme gme/gme.h gme_new_emu -lgme -lstdc++; }
 enabled libgsm            && { for gsm_hdr in "gsm.h" "gsm/gsm.h"; do
@@ -8090,7 +8094,6 @@ cat > $TMPH <<EOF
 #define EXTERN_ASM ${extern_prefix}
 #define BUILDSUF "$build_suffix"
 #define SLIBSUF "$SLIBSUF"
-#define HAVE_MMX2 HAVE_MMXEXT
 #define SWS_MAX_FILTER_SIZE $sws_max_filter_size
 EOF
 
