@@ -506,14 +506,14 @@ int print_sdp(const char *filename);
 int print_sdp(const char *filename)
 {
     char sdp[16384];
-    int j, ret;
+    int j = 0, ret;
     AVIOContext *sdp_pb;
     AVFormatContext **avc;
 
     avc = av_malloc_array(nb_output_files, sizeof(*avc));
     if (!avc)
         return AVERROR(ENOMEM);
-    for (int i = 0, j = 0; i < nb_output_files; i++) {
+    for (int i = 0; i < nb_output_files; i++) {
         if (!strcmp(output_files[i]->format->name, "rtp")) {
             avc[j] = mux_from_of(output_files[i])->fc;
             j++;
@@ -817,11 +817,6 @@ static void ost_free(OutputStream **post)
     av_freep(&ost->apad);
 
     av_freep(&ost->attachment_filename);
-
-#if FFMPEG_OPT_MAP_CHANNEL
-    av_freep(&ost->audio_channels_map);
-    ost->audio_channels_mapped = 0;
-#endif
 
     av_dict_free(&ost->sws_dict);
     av_dict_free(&ost->swr_opts);

@@ -272,6 +272,19 @@ transcode(){
         run ffprobe${PROGSUF}${EXECSUF} -bitexact $ffprobe_opts $tencfile || return
 }
 
+stream_demux(){
+    src_fmt=$1
+    srcfile=$2
+    src_opts=$3
+    enc_opts=$4
+    ffprobe_opts=$5
+    tsrcfile=$(target_path $srcfile)
+    ffmpeg $DEC_OPTS -f $src_fmt $src_opts -i $tsrcfile $ENC_OPTS $FLAGS $enc_opts \
+        -f framecrc - || return
+    test -z "$ffprobe_opts" || \
+        run ffprobe${PROGSUF}${EXECSUF} -bitexact $ffprobe_opts $tsrcfile || return
+}
+
 stream_remux(){
     src_fmt=$1
     srcfile=$2
@@ -658,7 +671,7 @@ else
 fi
 echo "${test}:${sig:-$err}:$cmpo:$erro" >$repfile
 
-if test $err != 0 && test $gen != "no" ; then
+if test $err != 0 && test $gen != "no" && test "${ref#tests/data/}" == "$ref" ; then
     echo "GEN     $ref"
     cp -f "$outfile" "$ref"
     err=$?
