@@ -817,10 +817,13 @@ static void derive_affine_mvc(MvField *mvc, const VVCFrameContext *fc, const MvF
     const int vs = fc->ps.sps->vshift[1];
     const MvField* mv2 = ff_vvc_get_mvf(fc, x0 + hs * sbw, y0 + vs * sbh);
     *mvc = *mv;
-    mvc->mv[0].x += mv2->mv[0].x;
-    mvc->mv[0].y += mv2->mv[0].y;
-    mvc->mv[1].x += mv2->mv[1].x;
-    mvc->mv[1].y += mv2->mv[1].y;
+
+    // Due to different pred_flag, one of the motion vectors may have an invalid value.
+    // Cast them to an unsigned type to avoid undefined behavior.
+    mvc->mv[0].x += (unsigned int)mv2->mv[0].x;
+    mvc->mv[0].y += (unsigned int)mv2->mv[0].y;
+    mvc->mv[1].x += (unsigned int)mv2->mv[1].x;
+    mvc->mv[1].y += (unsigned int)mv2->mv[1].y;
     ff_vvc_round_mv(mvc->mv + 0, 0, 1);
     ff_vvc_round_mv(mvc->mv + 1, 0, 1);
 }
@@ -893,7 +896,7 @@ static void predict_inter(VVCLocalContext *lc)
 
 static int has_inter_luma(const CodingUnit *cu)
 {
-    return cu->pred_mode != MODE_INTRA && cu->pred_mode != MODE_PLT && cu->tree_type != DUAL_TREE_CHROMA;
+    return (cu->pred_mode == MODE_INTER || cu->pred_mode == MODE_SKIP) && cu->tree_type != DUAL_TREE_CHROMA;
 }
 
 int ff_vvc_predict_inter(VVCLocalContext *lc, const int rs)

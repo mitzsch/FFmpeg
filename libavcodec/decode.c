@@ -977,8 +977,8 @@ int avcodec_decode_subtitle2(AVCodecContext *avctx, AVSubtitle *sub,
     }
     if (!avctx->codec)
         return AVERROR(EINVAL);
-    if (avctx->codec->type != AVMEDIA_TYPE_SUBTITLE) {
-        av_log(avctx, AV_LOG_ERROR, "Invalid media type for subtitles\n");
+    if (ffcodec(avctx->codec)->cb_type != FF_CODEC_CB_TYPE_DECODE_SUB) {
+        av_log(avctx, AV_LOG_ERROR, "Codec not subtitle decoder\n");
         return AVERROR(EINVAL);
     }
 
@@ -1433,7 +1433,6 @@ static const struct {
     { AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA },
     { AV_PKT_DATA_CONTENT_LIGHT_LEVEL,        AV_FRAME_DATA_CONTENT_LIGHT_LEVEL },
     { AV_PKT_DATA_ICC_PROFILE,                AV_FRAME_DATA_ICC_PROFILE },
-    { AV_PKT_DATA_DYNAMIC_HDR10_PLUS,         AV_FRAME_DATA_DYNAMIC_HDR_PLUS },
     { AV_PKT_DATA_AMBIENT_VIEWING_ENVIRONMENT,AV_FRAME_DATA_AMBIENT_VIEWING_ENVIRONMENT },
 };
 
@@ -1446,6 +1445,7 @@ int ff_decode_frame_props_from_pkt(const AVCodecContext *avctx,
     } sd[] = {
         { AV_PKT_DATA_A53_CC,                     AV_FRAME_DATA_A53_CC },
         { AV_PKT_DATA_AFD,                        AV_FRAME_DATA_AFD },
+        { AV_PKT_DATA_DYNAMIC_HDR10_PLUS,         AV_FRAME_DATA_DYNAMIC_HDR_PLUS },
         { AV_PKT_DATA_S12M_TIMECODE,              AV_FRAME_DATA_S12M_TIMECODE },
         { AV_PKT_DATA_SKIP_SAMPLES,               AV_FRAME_DATA_SKIP_SAMPLES },
     };
