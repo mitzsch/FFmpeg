@@ -358,7 +358,7 @@ static void write_char(CCaptionSubContext *ctx, struct Screen *screen, char ch)
         return;
     }
     else {
-        av_log(ctx, AV_LOG_WARNING, "Data Ignored since exceeding screen width\n");
+        av_log(ctx, AV_LOG_WARNING, "Data ignored due to columns exceeding screen width\n");
         return;
     }
 }
@@ -948,7 +948,7 @@ static const AVOption options[] = {
 };
 
 static const AVClass ccaption_dec_class = {
-    .class_name = "Closed caption Decoder",
+    .class_name = "Closed Captions Decoder",
     .item_name  = av_default_item_name,
     .option     = options,
     .version    = LIBAVUTIL_VERSION_INT,
@@ -956,7 +956,7 @@ static const AVClass ccaption_dec_class = {
 
 const FFCodec ff_ccaption_decoder = {
     .p.name         = "cc_dec",
-    CODEC_LONG_NAME("Closed Caption (EIA-608 / CEA-708)"),
+    CODEC_LONG_NAME("Closed Captions (EIA-608 / CEA-708)"),
     .p.type         = AVMEDIA_TYPE_SUBTITLE,
     .p.id           = AV_CODEC_ID_EIA_608,
     .p.priv_class   = &ccaption_dec_class,
