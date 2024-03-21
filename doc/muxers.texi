@@ -1423,6 +1423,23 @@ Use @command{ffmpeg} to convert the input:
 ffmpeg -i INPUT -s:v 720x480 -pix_fmt yuv411p -r 29.97 -ac 2 -ar 48000 -y out.dv
 @end example
 
+@section ffmetadata
+FFmpeg metadata muxer.
+
+This muxer writes the streams metadata in the @samp{ffmetadata}
+format.
+
+See @ref{metadata,,the Metadata chapter,ffmpeg-formats} for
+information about the format.
+
+@subsection Example
+
+Use @command{ffmpeg} to extract metadata from an input file to a @file{metadata.ffmeta}
+file in @samp{ffmetadata} format:
+@example
+ffmpeg -i INPUT -f ffmetadata metadata.ffmeta
+@end example
+
 @anchor{fifo}
 @section fifo
 FIFO (First-In First-Out) muxer.
@@ -1534,19 +1551,60 @@ ffmpeg -re -i ... -c:v libx264 -c:a aac -f fifo -fifo_format flv \
   -map 0:v -map 0:a rtmp://example.com/live/stream_name
 @end example
 
-@section flv
+@section film_cpk
+Sega film (.cpk) muxer.
 
+This format was used as internal format for several Sega games.
+
+For more information regarding the Sega film file format, visit
+@url{http://wiki.multimedia.cx/index.php?title=Sega_FILM}.
+
+It accepts at maximum one @samp{cinepak} or raw video stream, and at
+maximum one audio stream.
+
+@section filmstrip
+Adobe Filmstrip muxer.
+
+This format is used by several Adobe tools to store a generated filmstrip export. It
+accepts a single raw video stream.
+
+@section fits
+Flexible Image Transport System (FITS) muxer.
+
+This image format is used to store astronomical data.
+
+For more information regarding the format, visit
+@url{https://fits.gsfc.nasa.gov}.
+
+@section flac
+Raw FLAC audio muxer.
+
+This muxer accepts exactly one FLAC audio stream. Additionally, it is possible to add
+images with disposition @samp{attached_pic}.
+
+@subsection Options
+@table @option
+@item write_header @var{bool}
+write the file header if set to @code{true}, default is @code{true}
+@end table
+
+@subsection Example
+Use @command{ffmpeg} to store the audio stream from an input file,
+together with several pictures used with @samp{attached_pic}
+disposition:
+@example
+ffmpeg -i INPUT -i pic1.png -i pic2.jpg -map 0:a -map 1 -map 2 -disposition:v attached_pic OUTPUT
+@end example
+
+@section flv
 Adobe Flash Video Format muxer.
 
-This muxer accepts the following options:
-
+@subsection Options
 @table @option
-
 @item flvflags @var{flags}
 Possible values:
 
 @table @samp
-
 @item aac_seq_header_detect
 Place AAC sequence header based on audio stream data.
 
@@ -1687,24 +1745,26 @@ See also the @ref{framehash} and @ref{md5} muxers.
 
 @anchor{gif}
 @section gif
-
 Animated GIF muxer.
 
-It accepts the following options:
+Note that the GIF format has a very large time base: the delay between two frames can
+therefore not be smaller than one centi second.
 
+@subsection Options
 @table @option
-@item loop
+@item loop @var{bool}
 Set the number of times to loop the output. Use @code{-1} for no loop, @code{0}
 for looping indefinitely (default).
 
-@item final_delay
+@item final_delay @var{delay}
 Force the delay (expressed in centiseconds) after the last frame. Each frame
 ends with a delay until the next frame. The default is @code{-1}, which is a
 special value to tell the muxer to re-use the previous delay. In case of a
 loop, you might want to customize this value to mark a pause for instance.
 @end table
 
-For example, to encode a gif looping 10 times, with a 5 seconds delay between
+@subsection Example
+Encode a gif looping 10 times, with a 5 seconds delay between
 the loops:
 @example
 ffmpeg -i INPUT -loop 10 -final_delay 500 out.gif
@@ -1715,9 +1775,6 @@ force the @ref{image2} muxer:
 @example
 ffmpeg -i INPUT -c:v gif -f image2 "out%d.gif"
 @end example
-
-Note 2: the GIF format has a very large time base: the delay between two frames
-can therefore not be smaller than one centi second.
 
 @anchor{hash}
 @section hash
