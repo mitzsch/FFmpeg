@@ -668,10 +668,10 @@ static int mov_write_enda_tag(AVIOContext *pb)
 
 static int mov_write_enda_tag_be(AVIOContext *pb)
 {
-  avio_wb32(pb, 10);
-  ffio_wfourcc(pb, "enda");
-  avio_wb16(pb, 0); /* big endian */
-  return 10;
+    avio_wb32(pb, 10);
+    ffio_wfourcc(pb, "enda");
+    avio_wb16(pb, 0); /* big endian */
+    return 10;
 }
 
 static void put_descr(AVIOContext *pb, int tag, unsigned int size)
@@ -979,9 +979,9 @@ static int mov_write_wave_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *tra
     ffio_wfourcc(pb, "wave");
 
     if (track->par->codec_id != AV_CODEC_ID_QDM2) {
-    avio_wb32(pb, 12);    /* size */
-    ffio_wfourcc(pb, "frma");
-    avio_wl32(pb, track->tag);
+        avio_wb32(pb, 12);    /* size */
+        ffio_wfourcc(pb, "frma");
+        avio_wl32(pb, track->tag);
     }
 
     if (track->par->codec_id == AV_CODEC_ID_AAC) {
@@ -991,9 +991,9 @@ static int mov_write_wave_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *tra
         avio_wb32(pb, 0);
         mov_write_esds_tag(pb, track);
     } else if (mov_pcm_le_gt16(track->par->codec_id))  {
-      mov_write_enda_tag(pb);
+        mov_write_enda_tag(pb);
     } else if (mov_pcm_be_gt16(track->par->codec_id))  {
-      mov_write_enda_tag_be(pb);
+        mov_write_enda_tag_be(pb);
     } else if (track->par->codec_id == AV_CODEC_ID_AMR_NB) {
         mov_write_amr_tag(pb, track);
     } else if (track->par->codec_id == AV_CODEC_ID_AC3) {
@@ -1805,11 +1805,11 @@ static const struct {
 
 static int mov_get_dnxhd_codec_tag(AVFormatContext *s, MOVTrack *track)
 {
-  int tag = MKTAG('A','V','d','n');
-  if (track->par->profile != AV_PROFILE_UNKNOWN &&
-      track->par->profile != AV_PROFILE_DNXHD)
-      tag = MKTAG('A','V','d','h');
-  return tag;
+    int tag = MKTAG('A','V','d','n');
+    if (track->par->profile != AV_PROFILE_UNKNOWN &&
+        track->par->profile != AV_PROFILE_DNXHD)
+        tag = MKTAG('A','V','d','h');
+    return tag;
 }
 
 static int mov_get_rawvideo_codec_tag(AVFormatContext *s, MOVTrack *track)
@@ -2997,18 +2997,18 @@ static int mov_write_gmhd_tag(AVIOContext *pb, MOVTrack *track)
      * bytes are copied verbatim.
      */
     if (track->tag != MKTAG('c','6','0','8')) {
-    avio_wb32(pb, 0x2C);   /* size */
-    ffio_wfourcc(pb, "text");
-    avio_wb16(pb, 0x01);
-    avio_wb32(pb, 0x00);
-    avio_wb32(pb, 0x00);
-    avio_wb32(pb, 0x00);
-    avio_wb32(pb, 0x01);
-    avio_wb32(pb, 0x00);
-    avio_wb32(pb, 0x00);
-    avio_wb32(pb, 0x00);
-    avio_wb32(pb, 0x00004000);
-    avio_wb16(pb, 0x0000);
+        avio_wb32(pb, 0x2C);   /* size */
+        ffio_wfourcc(pb, "text");
+        avio_wb16(pb, 0x01);
+        avio_wb32(pb, 0x00);
+        avio_wb32(pb, 0x00);
+        avio_wb32(pb, 0x00);
+        avio_wb32(pb, 0x01);
+        avio_wb32(pb, 0x00);
+        avio_wb32(pb, 0x00);
+        avio_wb32(pb, 0x00);
+        avio_wb32(pb, 0x00004000);
+        avio_wb16(pb, 0x0000);
     }
 
     if (track->par->codec_tag == MKTAG('t','m','c','d')) {
@@ -4853,16 +4853,15 @@ static int mov_write_isml_manifest(AVIOContext *pb, MOVMuxContext *mov, AVFormat
             param_write_int(pb, "DisplayHeight", track->par->height);
         } else {
             if (track->par->codec_id == AV_CODEC_ID_AAC) {
-                switch (track->par->profile)
-                {
-                    case AV_PROFILE_AAC_HE_V2:
-                        param_write_string(pb, "FourCC", "AACP");
-                        break;
-                    case AV_PROFILE_AAC_HE:
-                        param_write_string(pb, "FourCC", "AACH");
-                        break;
-                    default:
-                        param_write_string(pb, "FourCC", "AACL");
+                switch (track->par->profile) {
+                case AV_PROFILE_AAC_HE_V2:
+                    param_write_string(pb, "FourCC", "AACP");
+                    break;
+                case AV_PROFILE_AAC_HE:
+                    param_write_string(pb, "FourCC", "AACH");
+                    break;
+                default:
+                    param_write_string(pb, "FourCC", "AACL");
                 }
             } else if (track->par->codec_id == AV_CODEC_ID_WMAPRO) {
                 param_write_string(pb, "FourCC", "WMAP");
@@ -8241,7 +8240,7 @@ const FFOutputFormat ff_mov_muxer = {
     },
     .check_bitstream   = mov_check_bitstream,
     .p.priv_class      = &mov_isobmff_muxer_class,
-    .flags_internal    = FF_FMT_ALLOW_FLUSH,
+    .flags_internal    = FF_OFMT_FLAG_ALLOW_FLUSH,
 };
 #endif
 #if CONFIG_TGP_MUXER
@@ -8265,7 +8264,7 @@ const FFOutputFormat ff_tgp_muxer = {
     .p.codec_tag       = codec_3gp_tags_list,
     .check_bitstream   = mov_check_bitstream,
     .p.priv_class      = &mov_isobmff_muxer_class,
-    .flags_internal    = FF_FMT_ALLOW_FLUSH,
+    .flags_internal    = FF_OFMT_FLAG_ALLOW_FLUSH,
 };
 #endif
 #if CONFIG_MP4_MUXER
@@ -8291,7 +8290,7 @@ const FFOutputFormat ff_mp4_muxer = {
     .p.codec_tag       = mp4_codec_tags_list,
     .check_bitstream   = mov_check_bitstream,
     .p.priv_class      = &mov_isobmff_muxer_class,
-    .flags_internal    = FF_FMT_ALLOW_FLUSH,
+    .flags_internal    = FF_OFMT_FLAG_ALLOW_FLUSH,
 };
 #endif
 #if CONFIG_PSP_MUXER
@@ -8316,7 +8315,7 @@ const FFOutputFormat ff_psp_muxer = {
     .p.codec_tag       = mp4_codec_tags_list,
     .check_bitstream   = mov_check_bitstream,
     .p.priv_class      = &mov_isobmff_muxer_class,
-    .flags_internal    = FF_FMT_ALLOW_FLUSH,
+    .flags_internal    = FF_OFMT_FLAG_ALLOW_FLUSH,
 };
 #endif
 #if CONFIG_TG2_MUXER
@@ -8340,7 +8339,7 @@ const FFOutputFormat ff_tg2_muxer = {
     .p.codec_tag       = codec_3gp_tags_list,
     .check_bitstream   = mov_check_bitstream,
     .p.priv_class      = &mov_isobmff_muxer_class,
-    .flags_internal    = FF_FMT_ALLOW_FLUSH,
+    .flags_internal    = FF_OFMT_FLAG_ALLOW_FLUSH,
 };
 #endif
 #if CONFIG_IPOD_MUXER
@@ -8365,7 +8364,7 @@ const FFOutputFormat ff_ipod_muxer = {
     .p.codec_tag       = (const AVCodecTag* const []){ codec_ipod_tags, 0 },
     .check_bitstream   = mov_check_bitstream,
     .p.priv_class      = &mov_isobmff_muxer_class,
-    .flags_internal    = FF_FMT_ALLOW_FLUSH,
+    .flags_internal    = FF_OFMT_FLAG_ALLOW_FLUSH,
 };
 #endif
 #if CONFIG_ISMV_MUXER
@@ -8391,7 +8390,7 @@ const FFOutputFormat ff_ismv_muxer = {
         codec_mp4_tags, codec_ism_tags, 0 },
     .check_bitstream   = mov_check_bitstream,
     .p.priv_class      = &mov_isobmff_muxer_class,
-    .flags_internal    = FF_FMT_ALLOW_FLUSH,
+    .flags_internal    = FF_OFMT_FLAG_ALLOW_FLUSH,
 };
 #endif
 #if CONFIG_F4V_MUXER
@@ -8416,7 +8415,7 @@ const FFOutputFormat ff_f4v_muxer = {
     .p.codec_tag       = (const AVCodecTag* const []){ codec_f4v_tags, 0 },
     .check_bitstream   = mov_check_bitstream,
     .p.priv_class      = &mov_isobmff_muxer_class,
-    .flags_internal    = FF_FMT_ALLOW_FLUSH,
+    .flags_internal    = FF_OFMT_FLAG_ALLOW_FLUSH,
 };
 #endif
 #if CONFIG_AVIF_MUXER
@@ -8439,6 +8438,6 @@ const FFOutputFormat ff_avif_muxer = {
 #endif
     .p.codec_tag       = codec_avif_tags_list,
     .p.priv_class      = &mov_avif_muxer_class,
-    .flags_internal    = FF_FMT_ALLOW_FLUSH,
+    .flags_internal    = FF_OFMT_FLAG_ALLOW_FLUSH,
 };
 #endif
