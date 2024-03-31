@@ -687,5 +687,4 @@ const FFOutputFormat ff_spdif_muxer = {
     .deinit            = spdif_deinit,
     .p.flags           = AVFMT_NOTIMESTAMPS,
     .p.priv_class      = &spdif_class,
-    .flags_internal    = FF_OFMT_FLAG_MAX_ONE_OF_EACH,
 };
