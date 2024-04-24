@@ -373,8 +373,13 @@ static void order_hint_info(AV1DecContext *s)
         int ref_order_hint = s->ref[ref_slot].order_hint;
 
         frame->order_hints[ref_name] = ref_order_hint;
-        frame->ref_frame_sign_bias[ref_name] =
-            get_relative_dist(seq, ref_order_hint, frame->order_hint);
+        if (!seq->enable_order_hint) {
+            frame->ref_frame_sign_bias[ref_name] = 0;
+        } else {
+            frame->ref_frame_sign_bias[ref_name] =
+                get_relative_dist(seq, ref_order_hint,
+                                  frame->order_hint) > 0;
+        }
     }
 }
 
@@ -885,10 +890,10 @@ static av_cold int av1_decode_init(AVCodecContext *avctx)
     }
 
     s->dovi.logctx = avctx;
-    s->dovi.dv_profile = 10; // default for AV1
+    s->dovi.cfg.dv_profile = 10; // default for AV1
     sd = ff_get_coded_side_data(avctx, AV_PKT_DATA_DOVI_CONF);
-    if (sd && sd->size > 0)
-        ff_dovi_update_cfg(&s->dovi, (AVDOVIDecoderConfigurationRecord *) sd->data);
+    if (sd && sd->size >= sizeof(s->dovi.cfg))
+        s->dovi.cfg = *(AVDOVIDecoderConfigurationRecord *) sd->data;
 
     return ret;
 }
