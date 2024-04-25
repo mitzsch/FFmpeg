@@ -138,6 +138,8 @@ typedef struct HTTPContext {
     char *new_location;
     AVDictionary *redirect_cache;
     uint64_t filesize_from_content_range;
+    int reconnect_max_retries;
+    int reconnect_delay_total_max;
 } HTTPContext;
 
 #define OFFSET(x) offsetof(HTTPContext, x)
@@ -176,6 +178,8 @@ static const AVOption options[] = {
     { "reconnect_on_http_error", "list of http status codes to reconnect on", OFFSET(reconnect_on_http_error), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D },
     { "reconnect_streamed", "auto reconnect streamed / non seekable streams", OFFSET(reconnect_streamed), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, D },
     { "reconnect_delay_max", "max reconnect delay in seconds after which to give up", OFFSET(reconnect_delay_max), AV_OPT_TYPE_INT, { .i64 = 120 }, 0, UINT_MAX/1000/1000, D },
+    { "reconnect_max_retries", "the max number of times to retry a connection", OFFSET(reconnect_max_retries), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, INT_MAX, D },
+    { "reconnect_delay_total_max", "max total reconnect delay in seconds after which to give up", OFFSET(reconnect_delay_total_max), AV_OPT_TYPE_INT, { .i64 = 256 }, 0, UINT_MAX/1000/1000, D },
     { "listen", "listen on HTTP", OFFSET(listen), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 2, D | E },
     { "resource", "The resource requested by a client", OFFSET(resource), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, E },
     { "reply_code", "The http status code to return to a client", OFFSET(reply_code), AV_OPT_TYPE_INT, { .i64 = 200}, INT_MIN, 599, E},
@@ -286,6 +290,7 @@ static int http_should_reconnect(HTTPContext *s, int err)
     case AVERROR_HTTP_UNAUTHORIZED:
     case AVERROR_HTTP_FORBIDDEN:
     case AVERROR_HTTP_NOT_FOUND:
+    case AVERROR_HTTP_TOO_MANY_REQUESTS:
     case AVERROR_HTTP_OTHER_4XX:
         status_group = "4xx";
         break;
@@ -355,8 +360,9 @@ static int http_open_cnx(URLContext *h, AVDictionary **options)
 {
     HTTPAuthType cur_auth_type, cur_proxy_auth_type;
     HTTPContext *s = h->priv_data;
-    int ret, attempts = 0, redirects = 0;
+    int ret, conn_attempts = 1, auth_attempts = 0, redirects = 0;
     int reconnect_delay = 0;
+    int reconnect_delay_total = 0;
     uint64_t off;
     char *cached;
 
@@ -382,14 +388,18 @@ redo:
     ret = http_open_cnx_internal(h, options);
     if (ret < 0) {
         if (!http_should_reconnect(s, ret) ||
-            reconnect_delay > s->reconnect_delay_max)
+            reconnect_delay > s->reconnect_delay_max ||
+            (s->reconnect_max_retries >= 0 && conn_attempts > s->reconnect_max_retries) ||
+            reconnect_delay_total > s->reconnect_delay_total_max)
             goto fail;
 
         av_log(h, AV_LOG_WARNING, "Will reconnect at %"PRIu64" in %d second(s).\n", off, reconnect_delay);
         ret = ff_network_sleep_interruptible(1000U * 1000 * reconnect_delay, &h->interrupt_callback);
         if (ret != AVERROR(ETIMEDOUT))
             goto fail;
+        reconnect_delay_total += reconnect_delay;
         reconnect_delay = 1 + 2 * reconnect_delay;
+        conn_attempts++;
 
         /* restore the offset (http_connect resets it) */
         s->off = off;
@@ -398,10 +408,10 @@ redo:
         goto redo;
     }
 
-    attempts++;
+    auth_attempts++;
     if (s->http_code == 401) {
         if ((cur_auth_type == HTTP_AUTH_NONE || s->auth_state.stale) &&
-            s->auth_state.auth_type != HTTP_AUTH_NONE && attempts < 4) {
+            s->auth_state.auth_type != HTTP_AUTH_NONE && auth_attempts < 4) {
             ffurl_closep(&s->hd);
             goto redo;
         } else
@@ -409,7 +419,7 @@ redo:
     }
     if (s->http_code == 407) {
         if ((cur_proxy_auth_type == HTTP_AUTH_NONE || s->proxy_auth_state.stale) &&
-            s->proxy_auth_state.auth_type != HTTP_AUTH_NONE && attempts < 4) {
+            s->proxy_auth_state.auth_type != HTTP_AUTH_NONE && auth_attempts < 4) {
             ffurl_closep(&s->hd);
             goto redo;
         } else
@@ -438,7 +448,7 @@ redo:
         /* Restart the authentication process with the new target, which
          * might use a different auth mechanism. */
         memset(&s->auth_state, 0, sizeof(s->auth_state));
-        attempts         = 0;
+        auth_attempts         = 0;
         goto redo;
     }
     return 0;
@@ -522,6 +532,7 @@ int ff_http_averror(int status_code, int default_averror)
         case 401: return AVERROR_HTTP_UNAUTHORIZED;
         case 403: return AVERROR_HTTP_FORBIDDEN;
         case 404: return AVERROR_HTTP_NOT_FOUND;
+        case 429: return AVERROR_HTTP_TOO_MANY_REQUESTS;
         default: break;
     }
     if (status_code >= 400 && status_code <= 499)
@@ -557,6 +568,11 @@ static int http_write_reply(URLContext* h, int status_code)
     case 404:
         reply_code = 404;
         reply_text = "Not Found";
+        break;
+    case AVERROR_HTTP_TOO_MANY_REQUESTS:
+    case 429:
+        reply_code = 429;
+        reply_text = "Too Many Requests";
         break;
     case 200:
         reply_code = 200;
@@ -1080,7 +1096,7 @@ static void parse_cache_control(HTTPContext *s, const char *p)
     }
 }
 
-static int process_line(URLContext *h, char *line, int line_count)
+static int process_line(URLContext *h, char *line, int line_count, int *parsed_http_code)
 {
     HTTPContext *s = h->priv_data;
     const char *auto_method =  h->flags & AVIO_FLAG_READ ? "POST" : "GET";
@@ -1159,6 +1175,8 @@ static int process_line(URLContext *h, char *line, int line_count)
             s->http_code = strtol(p, &end, 10);
 
             av_log(h, AV_LOG_TRACE, "http_code=%d\n", s->http_code);
+
+            *parsed_http_code = 1;
 
             if ((ret = check_http_code(h, s->http_code, end)) < 0)
                 return ret;
@@ -1332,7 +1350,7 @@ static int http_read_header(URLContext *h)
 {
     HTTPContext *s = h->priv_data;
     char line[MAX_URL_SIZE];
-    int err = 0;
+    int err = 0, http_err = 0;
 
     av_freep(&s->new_location);
     s->expires = 0;
@@ -1340,18 +1358,31 @@ static int http_read_header(URLContext *h)
     s->filesize_from_content_range = UINT64_MAX;
 
     for (;;) {
+        int parsed_http_code = 0;
+
         if ((err = http_get_line(s, line, sizeof(line))) < 0)
             return err;
 
         av_log(h, AV_LOG_TRACE, "header='%s'\n", line);
 
-        err = process_line(h, line, s->line_count);
-        if (err < 0)
-            return err;
+        err = process_line(h, line, s->line_count, &parsed_http_code);
+        if (err < 0) {
+            if (parsed_http_code) {
+                http_err = err;
+            } else {
+                /* Prefer to return HTTP code error if we've already seen one. */
+                if (http_err)
+                    return http_err;
+                else
+                    return err;
+            }
+        }
         if (err == 0)
             break;
         s->line_count++;
     }
+    if (http_err)
+        return http_err;
 
     // filesize from Content-Range can always be used, even if using chunked Transfer-Encoding
     if (s->filesize_from_content_range != UINT64_MAX)
@@ -1673,6 +1704,8 @@ static int http_read_stream(URLContext *h, uint8_t *buf, int size)
     int err, read_ret;
     int64_t seek_ret;
     int reconnect_delay = 0;
+    int reconnect_delay_total = 0;
+    int conn_attempts = 1;
 
     if (!s->hd)
         return AVERROR_EOF;
@@ -1701,14 +1734,17 @@ static int http_read_stream(URLContext *h, uint8_t *buf, int size)
             !(s->reconnect_at_eof && read_ret == AVERROR_EOF))
             break;
 
-        if (reconnect_delay > s->reconnect_delay_max)
+        if (reconnect_delay > s->reconnect_delay_max || (s->reconnect_max_retries >= 0 && conn_attempts > s->reconnect_max_retries) ||
+            reconnect_delay_total > s->reconnect_delay_total_max)
             return AVERROR(EIO);
 
         av_log(h, AV_LOG_WARNING, "Will reconnect at %"PRIu64" in %d second(s), error=%s.\n", s->off, reconnect_delay, av_err2str(read_ret));
         err = ff_network_sleep_interruptible(1000U*1000*reconnect_delay, &h->interrupt_callback);
         if (err != AVERROR(ETIMEDOUT))
             return err;
+        reconnect_delay_total += reconnect_delay;
         reconnect_delay = 1 + 2*reconnect_delay;
+        conn_attempts++;
         seek_ret = http_seek_internal(h, target, SEEK_SET, 1);
         if (seek_ret >= 0 && seek_ret != target) {
             av_log(h, AV_LOG_ERROR, "Failed to reconnect at %"PRIu64".\n", target);
@@ -2049,7 +2085,7 @@ static int http_proxy_open(URLContext *h, const char *uri, int flags)
     char hostname[1024], hoststr[1024];
     char auth[1024], pathbuf[1024], *path;
     char lower_url[100];
-    int port, ret = 0, attempts = 0;
+    int port, ret = 0, auth_attempts = 0;
     HTTPAuthType cur_auth_type;
     char *authstr;
 
@@ -2109,10 +2145,10 @@ redo:
     if (ret < 0)
         goto fail;
 
-    attempts++;
+    auth_attempts++;
     if (s->http_code == 407 &&
         (cur_auth_type == HTTP_AUTH_NONE || s->proxy_auth_state.stale) &&
-        s->proxy_auth_state.auth_type != HTTP_AUTH_NONE && attempts < 2) {
+        s->proxy_auth_state.auth_type != HTTP_AUTH_NONE && auth_attempts < 2) {
         ffurl_closep(&s->hd);
         goto redo;
     }
