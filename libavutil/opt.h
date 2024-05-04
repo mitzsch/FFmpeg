@@ -53,6 +53,16 @@
  * question is allowed to access the field. This allows us to extend the
  * semantics of those fields without breaking API compatibility.
  *
+ * @section avoptions_scope Scope of AVOptions
+ *
+ * AVOptions is designed to support any set of multimedia configuration options
+ * that can be defined at compile-time.  Although it is mainly used to expose
+ * FFmpeg options, you are welcome to adapt it to your own use case.
+ *
+ * No single approach can ever fully solve the problem of configuration,
+ * but please submit a patch if you believe you have found a problem
+ * that is best solved by extending AVOptions.
+ *
  * @section avoptions_implement Implementing AVOptions
  * This section describes how to add AVOptions capabilities to a struct.
  *
@@ -242,7 +252,7 @@ enum AVOptionType{
     AV_OPT_TYPE_DICT,
     AV_OPT_TYPE_UINT64,
     AV_OPT_TYPE_CONST,
-    AV_OPT_TYPE_IMAGE_SIZE, ///< offset must point to two consecutive integers
+    AV_OPT_TYPE_IMAGE_SIZE, ///< offset must point to two consecutive ints
     AV_OPT_TYPE_PIXEL_FMT,
     AV_OPT_TYPE_SAMPLE_FMT,
     AV_OPT_TYPE_VIDEO_RATE, ///< offset must point to AVRational
