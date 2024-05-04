@@ -31,6 +31,7 @@
 #include "libavutil/avstring.h"
 #include "libavutil/bprint.h"
 #include "libavutil/getenv_utf8.h"
+#include "libavutil/macros.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/time.h"
@@ -56,7 +57,7 @@
 #define MAX_CACHED_REDIRECTS 32
 #define HTTP_SINGLE   1
 #define HTTP_MUTLI    2
-#define MAX_EXPIRY    19
+#define MAX_DATE_LEN  19
 #define WHITESPACES " \n\t\r"
 typedef enum {
     LOWER_PROTO,
@@ -138,6 +139,8 @@ typedef struct HTTPContext {
     char *new_location;
     AVDictionary *redirect_cache;
     uint64_t filesize_from_content_range;
+    int respect_retry_after;
+    unsigned int retry_after;
     int reconnect_max_retries;
     int reconnect_delay_total_max;
 } HTTPContext;
@@ -180,6 +183,7 @@ static const AVOption options[] = {
     { "reconnect_delay_max", "max reconnect delay in seconds after which to give up", OFFSET(reconnect_delay_max), AV_OPT_TYPE_INT, { .i64 = 120 }, 0, UINT_MAX/1000/1000, D },
     { "reconnect_max_retries", "the max number of times to retry a connection", OFFSET(reconnect_max_retries), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, INT_MAX, D },
     { "reconnect_delay_total_max", "max total reconnect delay in seconds after which to give up", OFFSET(reconnect_delay_total_max), AV_OPT_TYPE_INT, { .i64 = 256 }, 0, UINT_MAX/1000/1000, D },
+    { "respect_retry_after", "respect the Retry-After header when retrying connections", OFFSET(respect_retry_after), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, D },
     { "listen", "listen on HTTP", OFFSET(listen), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 2, D | E },
     { "resource", "The resource requested by a client", OFFSET(resource), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, E },
     { "reply_code", "The http status code to return to a client", OFFSET(reply_code), AV_OPT_TYPE_INT, { .i64 = 200}, INT_MIN, 599, E},
@@ -392,6 +396,14 @@ redo:
             (s->reconnect_max_retries >= 0 && conn_attempts > s->reconnect_max_retries) ||
             reconnect_delay_total > s->reconnect_delay_total_max)
             goto fail;
+
+        /* Both fields here are in seconds. */
+        if (s->respect_retry_after && s->retry_after > 0) {
+            reconnect_delay = s->retry_after;
+            if (reconnect_delay > s->reconnect_delay_max)
+                goto fail;
+            s->retry_after = 0;
+        }
 
         av_log(h, AV_LOG_WARNING, "Will reconnect at %"PRIu64" in %d second(s).\n", off, reconnect_delay);
         ret = ff_network_sleep_interruptible(1000U * 1000 * reconnect_delay, &h->interrupt_callback);
@@ -913,29 +925,29 @@ static int parse_icy(HTTPContext *s, const char *tag, const char *p)
     return 0;
 }
 
-static int parse_set_cookie_expiry_time(const char *exp_str, struct tm *buf)
+static int parse_http_date(const char *date_str, struct tm *buf)
 {
-    char exp_buf[MAX_EXPIRY];
-    int i, j, exp_buf_len = MAX_EXPIRY-1;
-    char *expiry;
+    char date_buf[MAX_DATE_LEN];
+    int i, j, date_buf_len = MAX_DATE_LEN-1;
+    char *date;
 
     // strip off any punctuation or whitespace
-    for (i = 0, j = 0; exp_str[i] != '\0' && j < exp_buf_len; i++) {
-        if ((exp_str[i] >= '0' && exp_str[i] <= '9') ||
-            (exp_str[i] >= 'A' && exp_str[i] <= 'Z') ||
-            (exp_str[i] >= 'a' && exp_str[i] <= 'z')) {
-            exp_buf[j] = exp_str[i];
+    for (i = 0, j = 0; date_str[i] != '\0' && j < date_buf_len; i++) {
+        if ((date_str[i] >= '0' && date_str[i] <= '9') ||
+            (date_str[i] >= 'A' && date_str[i] <= 'Z') ||
+            (date_str[i] >= 'a' && date_str[i] <= 'z')) {
+            date_buf[j] = date_str[i];
             j++;
         }
     }
-    exp_buf[j] = '\0';
-    expiry = exp_buf;
+    date_buf[j] = '\0';
+    date = date_buf;
 
     // move the string beyond the day of week
-    while ((*expiry < '0' || *expiry > '9') && *expiry != '\0')
-        expiry++;
+    while ((*date < '0' || *date > '9') && *date != '\0')
+        date++;
 
-    return av_small_strptime(expiry, "%d%b%Y%H%M%S", buf) ? 0 : AVERROR(EINVAL);
+    return av_small_strptime(date, "%d%b%Y%H%M%S", buf) ? 0 : AVERROR(EINVAL);
 }
 
 static int parse_set_cookie(const char *set_cookie, AVDictionary **dict)
@@ -995,7 +1007,7 @@ static int parse_cookie(HTTPContext *s, const char *p, AVDictionary **cookies)
     // ensure the cookie is not expired or older than an existing value
     if ((e = av_dict_get(new_params, "expires", NULL, 0)) && e->value) {
         struct tm new_tm = {0};
-        if (!parse_set_cookie_expiry_time(e->value, &new_tm)) {
+        if (!parse_http_date(e->value, &new_tm)) {
             AVDictionaryEntry *e2;
 
             // if the cookie has already expired ignore it
@@ -1012,7 +1024,7 @@ static int parse_cookie(HTTPContext *s, const char *p, AVDictionary **cookies)
                     e2 = av_dict_get(old_params, "expires", NULL, 0);
                     if (e2 && e2->value) {
                         struct tm old_tm = {0};
-                        if (!parse_set_cookie_expiry_time(e->value, &old_tm)) {
+                        if (!parse_http_date(e->value, &old_tm)) {
                             if (av_timegm(&new_tm) < av_timegm(&old_tm)) {
                                 av_dict_free(&new_params);
                                 av_dict_free(&old_params);
@@ -1064,7 +1076,7 @@ static void parse_expires(HTTPContext *s, const char *p)
 {
     struct tm tm;
 
-    if (!parse_set_cookie_expiry_time(p, &tm)) {
+    if (!parse_http_date(p, &tm)) {
         s->expires = av_timegm(&tm);
     }
 }
@@ -1241,6 +1253,18 @@ static int process_line(URLContext *h, char *line, int line_count, int *parsed_h
             parse_expires(s, p);
         } else if (!av_strcasecmp(tag, "Cache-Control")) {
             parse_cache_control(s, p);
+        } else if (!av_strcasecmp(tag, "Retry-After")) {
+            /* The header can be either an integer that represents seconds, or a date. */
+            struct tm tm;
+            int date_ret = parse_http_date(p, &tm);
+            if (!date_ret) {
+                time_t retry   = av_timegm(&tm);
+                int64_t now    = av_gettime() / 1000000;
+                int64_t diff   = ((int64_t) retry) - now;
+                s->retry_after = (unsigned int) FFMAX(0, diff);
+            } else {
+                s->retry_after = strtoul(p, NULL, 10);
+            }
         }
     }
     return 1;
@@ -1295,7 +1319,7 @@ static int get_cookies(HTTPContext *s, char **cookies, const char *path,
         // if the cookie has expired, don't add it
         if ((e = av_dict_get(cookie_params, "expires", NULL, 0)) && e->value) {
             struct tm tm_buf = {0};
-            if (!parse_set_cookie_expiry_time(e->value, &tm_buf)) {
+            if (!parse_http_date(e->value, &tm_buf)) {
                 if (av_timegm(&tm_buf) < av_gettime() / 1000000)
                     goto skip_cookie;
             }
