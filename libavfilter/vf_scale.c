@@ -766,6 +766,7 @@ static int config_props(AVFilterLink *outlink)
     av_freep(&flags_val);
 
     if (ctx->filter != &ff_vf_scale2ref) {
+        ff_framesync_uninit(&scale->fs);
         ret = ff_framesync_init(&scale->fs, ctx, ctx->nb_inputs);
         if (ret < 0)
             return ret;
@@ -1228,7 +1229,7 @@ static const AVOption scale_options[] = {
 };
 
 static const AVClass scale_class = {
-    .class_name       = "scale(2ref)",
+    .class_name       = "scale",
     .item_name        = av_default_item_name,
     .option           = scale_options,
     .version          = LIBAVUTIL_VERSION_INT,
@@ -1268,6 +1269,31 @@ const AVFilter ff_vf_scale = {
     .flags           = AVFILTER_FLAG_DYNAMIC_INPUTS,
 };
 
+static const AVClass *scale2ref_child_class_iterate(void **iter)
+{
+    const AVClass *c = *iter ? NULL : sws_get_class();
+    *iter = (void*)(uintptr_t)c;
+    return c;
+}
+
+static void *scale2ref_child_next(void *obj, void *prev)
+{
+    ScaleContext *s = obj;
+    if (!prev)
+        return s->sws_opts;
+    return NULL;
+}
+
+static const AVClass scale2ref_class = {
+    .class_name       = "scale(2ref)",
+    .item_name        = av_default_item_name,
+    .option           = scale_options,
+    .version          = LIBAVUTIL_VERSION_INT,
+    .category         = AV_CLASS_CATEGORY_FILTER,
+    .child_class_iterate = scale2ref_child_class_iterate,
+    .child_next          = scale2ref_child_next,
+};
+
 static const AVFilterPad avfilter_vf_scale2ref_inputs[] = {
     {
         .name         = "default",
@@ -1303,7 +1329,7 @@ const AVFilter ff_vf_scale2ref = {
     .init            = init,
     .uninit          = uninit,
     .priv_size       = sizeof(ScaleContext),
-    .priv_class      = &scale_class,
+    .priv_class      = &scale2ref_class,
     FILTER_INPUTS(avfilter_vf_scale2ref_inputs),
     FILTER_OUTPUTS(avfilter_vf_scale2ref_outputs),
     FILTER_QUERY_FUNC(query_formats),

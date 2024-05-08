@@ -2298,6 +2298,7 @@ HEADERS_LIST="
     OpenGL_gl3_h
     poll_h
     pthread_np_h
+    sys_hwprobe_h
     sys_param_h
     sys_resource_h
     sys_select_h
@@ -2489,6 +2490,7 @@ TYPES_LIST="
     struct_sockaddr_storage
     struct_stat_st_mtim_tv_nsec
     struct_v4l2_frmivalenum_discrete
+    struct_mfxConfigInterface
 "
 
 HAVE_LIST="
@@ -2872,6 +2874,7 @@ mpegvideoenc_select="aandcttables fdctdsp me_cmp mpegvideo pixblockdsp"
 msmpeg4dec_select="h263_decoder"
 msmpeg4enc_select="h263_encoder"
 vc1dsp_select="h264chroma qpeldsp startcode"
+wmv2dsp_select="qpeldsp"
 
 # decoders / encoders
 aac_decoder_select="adts_header mpeg4audio sinewin"
@@ -2903,6 +2906,8 @@ asv1_encoder_select="aandcttables bswapdsp fdctdsp pixblockdsp"
 asv2_decoder_select="blockdsp bswapdsp idctdsp"
 asv2_encoder_select="aandcttables bswapdsp fdctdsp pixblockdsp"
 atrac1_decoder_select="sinewin"
+atrac3p_decoder_select="sinewin"
+atrac3pal_decoder_select="sinewin"
 av1_decoder_select="atsc_a53 cbs_av1 dovi_rpudec"
 bink_decoder_select="blockdsp hpeldsp"
 binkaudio_dct_decoder_select="wma_freqs"
@@ -2915,7 +2920,7 @@ cook_decoder_select="audiodsp sinewin"
 cri_decoder_select="mjpeg_decoder"
 cscd_decoder_suggest="zlib"
 dds_decoder_select="texturedsp"
-dirac_decoder_select="dirac_parse dwt golomb videodsp mpegvideoenc"
+dirac_decoder_select="dirac_parse dwt golomb mpegvideoenc qpeldsp videodsp"
 dnxhd_decoder_select="blockdsp idctdsp"
 dnxhd_encoder_select="blockdsp fdctdsp idctdsp mpegvideoenc pixblockdsp videodsp"
 dvvideo_decoder_select="dvprofile idctdsp"
@@ -2944,6 +2949,7 @@ flv_decoder_select="h263_decoder"
 flv_encoder_select="h263_encoder"
 fourxm_decoder_select="blockdsp bswapdsp"
 fraps_decoder_select="bswapdsp huffman"
+ftr_decoder_select="adts_header"
 g2m_decoder_deps="zlib"
 g2m_decoder_select="blockdsp idctdsp jpegtables"
 g729_decoder_select="audiodsp"
@@ -3029,7 +3035,7 @@ notchlc_decoder_select="lzf"
 nuv_decoder_select="idctdsp"
 opus_decoder_deps="swresample"
 opus_encoder_select="audio_frame_queue"
-pdv_decoder_deps="zlib"
+pdv_decoder_select="inflate_wrapper"
 png_decoder_select="inflate_wrapper"
 png_encoder_select="deflate_wrapper llvidencdsp"
 prores_decoder_select="blockdsp idctdsp"
@@ -3855,6 +3861,7 @@ histeq_filter_deps="gpl"
 hqdn3d_filter_deps="gpl"
 iccdetect_filter_deps="lcms2"
 iccgen_filter_deps="lcms2"
+identity_filter_select="scene_sad"
 interlace_filter_deps="gpl"
 kerndeint_filter_deps="gpl"
 ladspa_filter_deps="ladspa libdl"
@@ -5537,6 +5544,8 @@ elif enabled ppc; then
 
 elif enabled riscv; then
 
+    check_headers sys/hwprobe.h
+
     if test_cpp_condition stddef.h "__riscv_zbb"; then
         enable fast_clz
     fi
@@ -6918,6 +6927,7 @@ elif enabled libvpl; then
     check_pkg_config libmfx "vpl >= 2.6" "mfxvideo.h mfxdispatcher.h" MFXLoad || \
             die "ERROR: libvpl >= 2.6 not found"
     add_cflags -DMFX_DEPRECATED_OFF
+    check_type "vpl/mfxdefs.h vpl/mfxvideo.h" "struct mfxConfigInterface"
 fi
 
 if enabled libmfx; then
