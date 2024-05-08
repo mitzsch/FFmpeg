@@ -1221,6 +1221,8 @@ static int mov_write_chnl_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *tra
     if (ret || !config) {
         config = 0;
         speaker_pos = av_malloc(layout->nb_channels);
+        if (!speaker_pos)
+            return AVERROR(ENOMEM);
         ret = ff_mov_get_channel_positions_from_layout(layout,
                 speaker_pos, layout->nb_channels);
         if (ret) {
@@ -1242,8 +1244,7 @@ static int mov_write_chnl_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *tra
     if (config) {
         avio_wb64(pb, 0);
     } else {
-        for (int i = 0; i < layout->nb_channels; i++)
-            avio_w8(pb, speaker_pos[i]);
+        avio_write(pb, speaker_pos, layout->nb_channels);
         av_freep(&speaker_pos);
     }
 
