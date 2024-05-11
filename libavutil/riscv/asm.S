@@ -36,13 +36,16 @@
 #define HWD
 #endif
 
-        .macro func sym, ext=
+        .macro func sym, ext1=, ext2=
             .text
             .align 2
 
             .option push
-            .ifnb \ext
-            .option arch, +\ext
+            .ifnb \ext1
+            .option arch, +\ext1
+            .ifnb \ext2
+            .option arch, +\ext2
+            .endif
             .endif
 
             .global \sym
@@ -90,11 +93,6 @@
 
         .macro  sh3add rd, rs1, rs2
         shnadd  3, \rd, \rs1, \rs2
-        .endm
-#endif
-#if !defined (__riscv_zbb)
-        .macro  min rd, rs1, rs2
-        .insn r OP, 4, 5, \rd, \rs1, \rs2
         .endm
 #endif
 
