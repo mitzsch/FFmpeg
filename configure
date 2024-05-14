@@ -2222,6 +2222,7 @@ ARCH_EXT_LIST_PPC="
 ARCH_EXT_LIST_RISCV="
     rv
     rvv
+    rv_zvbb
 "
 
 ARCH_EXT_LIST_X86="
@@ -2272,6 +2273,7 @@ HAVE_LIST_PUB="
 
 HEADERS_LIST="
     arpa_inet_h
+    asm_hwprobe_h
     asm_types_h
     cdio_paranoia_h
     cdio_paranoia_paranoia_h
@@ -2760,6 +2762,7 @@ power8_deps="vsx"
 
 rv_deps="riscv"
 rvv_deps="rv"
+rv_zvbb_deps="rvv"
 
 loongson2_deps="mips"
 loongson3_deps="mips"
@@ -2855,6 +2858,7 @@ faandct_select="fdctdsp"
 faanidct_deps="faan"
 faanidct_select="idctdsp"
 h264dsp_select="startcode"
+h264parse_select="golomb"
 h264_sei_select="atsc_a53 golomb"
 hevcparse_select="golomb"
 hevc_sei_select="atsc_a53 golomb"
@@ -3423,6 +3427,7 @@ av1_vaapi_encoder_select="cbs_av1 vaapi_encode"
 aac_parser_select="adts_header mpeg4audio"
 av1_parser_select="cbs_av1"
 evc_parser_select="evcparse"
+ftr_parser_select="adts_header mpeg4audio"
 h264_parser_select="golomb h264dsp h264parse h264_sei"
 hevc_parser_select="hevcparse hevc_sei"
 mpegaudio_parser_select="mpegaudioheader"
@@ -5544,6 +5549,7 @@ elif enabled ppc; then
 
 elif enabled riscv; then
 
+    check_headers asm/hwprobe.h
     check_headers sys/hwprobe.h
 
     if test_cpp_condition stddef.h "__riscv_zbb"; then
@@ -6384,6 +6390,7 @@ elif enabled riscv; then
 
     enabled rv && check_inline_asm rv '".option arch, +zbb\nrev8 t0, t1"'
     enabled rvv && check_inline_asm rvv '".option arch, +v\nvsetivli zero, 0, e8, m1, ta, ma"'
+    enabled rv_zvbb && check_inline_asm rv_zvbb '".option arch, +zvbb\nvclz.v v0, v8"'
 
 elif enabled x86; then
 

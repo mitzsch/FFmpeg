@@ -85,6 +85,7 @@ void checkasm_check_blockdsp(void);
 void checkasm_check_bswapdsp(void);
 void checkasm_check_colorspace(void);
 void checkasm_check_exrdsp(void);
+void checkasm_check_fdctdsp(void);
 void checkasm_check_fixed_dsp(void);
 void checkasm_check_flacdsp(void);
 void checkasm_check_float_dsp(void);
@@ -133,6 +134,7 @@ void checkasm_check_vp8dsp(void);
 void checkasm_check_vp9dsp(void);
 void checkasm_check_videodsp(void);
 void checkasm_check_vorbisdsp(void);
+void checkasm_check_vvc_alf(void);
 void checkasm_check_vvc_mc(void);
 
 struct CheckasmPerf;

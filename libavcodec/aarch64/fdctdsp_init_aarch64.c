@@ -1,6 +1,4 @@
 /*
- * Copyright (c) 2024 Institue of Software Chinese Academy of Sciences (ISCAS).
- *
  * This file is part of FFmpeg.
  *
  * FFmpeg is free software; you can redistribute it and/or
@@ -18,24 +16,24 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "config.h"
-
 #include "libavutil/attributes.h"
 #include "libavutil/cpu.h"
-#include "libavutil/riscv/cpu.h"
-#include "libavcodec/rv34dsp.h"
+#include "libavutil/aarch64/cpu.h"
+#include "libavcodec/avcodec.h"
+#include "libavcodec/fdctdsp.h"
+#include "fdct.h"
 
-void ff_rv34_inv_transform_dc_rvv(int16_t *block);
-void ff_rv34_idct_dc_add_rvv(uint8_t *dst, ptrdiff_t stride, int dc);
-
-av_cold void ff_rv34dsp_init_riscv(RV34DSPContext *c)
+av_cold void ff_fdctdsp_init_aarch64(FDCTDSPContext *c, AVCodecContext *avctx,
+                                     unsigned high_bit_depth)
 {
-#if HAVE_RVV
-    int flags = av_get_cpu_flags();
+    int cpu_flags = av_get_cpu_flags();
 
-    if (flags & AV_CPU_FLAG_RVV_I32 && ff_rv_vlen_least(128)) {
-        c->rv34_inv_transform_dc = ff_rv34_inv_transform_dc_rvv;
-        c->rv34_idct_dc_add = ff_rv34_idct_dc_add_rvv;
+    if (have_neon(cpu_flags)) {
+        if (!high_bit_depth) {
+            if (avctx->dct_algo == FF_DCT_AUTO ||
+                avctx->dct_algo == FF_DCT_NEON) {
+                c->fdct = ff_fdct_neon;
+            }
+        }
     }
-#endif
 }
