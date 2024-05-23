@@ -403,8 +403,8 @@ static int8_t smvd_find(const VVCFrameContext *fc, const SliceContext *sc, int l
     int8_t idx                    = -1;
     int old_diff                  = -1;
     for (int i = 0; i < rsh->num_ref_idx_active[lx]; i++) {
-        if (!rpl->isLongTerm[i]) {
-            int diff = poc - rpl->list[i];
+        if (!rpl->refs[i].is_lt) {
+            int diff = poc - rpl->refs[i].poc;
             if (find(idx, diff, old_diff)) {
                 idx = i;
                 old_diff = diff;
@@ -563,6 +563,9 @@ static int ref_frame(VVCFrame *dst, const VVCFrame *src)
     if (ret < 0)
         return ret;
 
+    ff_refstruct_replace(&dst->sps, src->sps);
+    ff_refstruct_replace(&dst->pps, src->pps);
+
     ff_refstruct_replace(&dst->progress, src->progress);
 
     ff_refstruct_replace(&dst->tab_dmvr_mvf, src->tab_dmvr_mvf);
@@ -573,6 +576,11 @@ static int ref_frame(VVCFrame *dst, const VVCFrame *src)
 
     dst->poc = src->poc;
     dst->ctb_count = src->ctb_count;
+
+    dst->scaling_win = src->scaling_win;
+    dst->ref_width   = src->ref_width;
+    dst->ref_height  = src->ref_height;
+
     dst->flags = src->flags;
     dst->sequence = src->sequence;
 
