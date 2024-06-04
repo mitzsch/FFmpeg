@@ -25,7 +25,7 @@
 #include "libavutil/common.h"
 
 #include "cabac_functions.h"
-#include "hevc_data.h"
+#include "data.h"
 #include "hevc.h"
 #include "hevcdec.h"
 
@@ -408,7 +408,7 @@ void ff_hevc_save_states(HEVCLocalContext *lc, int ctb_addr_ts)
          (s->ps.sps->ctb_width == 2 &&
           ctb_addr_ts % s->ps.sps->ctb_width == 0))) {
         memcpy(lc->common_cabac_state->state, lc->cabac_state, HEVC_CONTEXTS);
-        if (s->ps.sps->persistent_rice_adaptation_enabled_flag) {
+        if (s->ps.sps->persistent_rice_adaptation_enabled) {
             memcpy(lc->common_cabac_state->stat_coeff, lc->stat_coeff, HEVC_STAT_COEFFS);
         }
     }
@@ -417,7 +417,7 @@ void ff_hevc_save_states(HEVCLocalContext *lc, int ctb_addr_ts)
 static void load_states(HEVCLocalContext *lc, const HEVCContext *s)
 {
     memcpy(lc->cabac_state, lc->common_cabac_state->state, HEVC_CONTEXTS);
-    if (s->ps.sps->persistent_rice_adaptation_enabled_flag) {
+    if (s->ps.sps->persistent_rice_adaptation_enabled) {
         memcpy(lc->stat_coeff, lc->common_cabac_state->stat_coeff, HEVC_STAT_COEFFS);
     }
 }
@@ -425,16 +425,6 @@ static void load_states(HEVCLocalContext *lc, const HEVCContext *s)
 static int cabac_reinit(HEVCLocalContext *lc)
 {
     return skip_bytes(&lc->cc, 0) == NULL ? AVERROR_INVALIDDATA : 0;
-}
-
-static int cabac_init_decoder(HEVCLocalContext *lc)
-{
-    GetBitContext *gb = &lc->gb;
-    skip_bits(gb, 1);
-    align_get_bits(gb);
-    return ff_init_cabac_decoder(&lc->cc,
-                          gb->buffer + get_bits_count(gb) / 8,
-                          (get_bits_left(gb) + 7) / 8);
 }
 
 static void cabac_init_state(HEVCLocalContext *lc, const HEVCContext *s)
@@ -461,12 +451,13 @@ static void cabac_init_state(HEVCLocalContext *lc, const HEVCContext *s)
         lc->stat_coeff[i] = 0;
 }
 
-int ff_hevc_cabac_init(HEVCLocalContext *lc, int ctb_addr_ts)
+int ff_hevc_cabac_init(HEVCLocalContext *lc, int ctb_addr_ts,
+                       const uint8_t *data, size_t size)
 {
     const HEVCContext *const s = lc->parent;
 
     if (ctb_addr_ts == s->ps.pps->ctb_addr_rs_to_ts[s->sh.slice_ctb_addr_rs]) {
-        int ret = cabac_init_decoder(lc);
+        int ret = ff_init_cabac_decoder(&lc->cc, data, size);
         if (ret < 0)
             return ret;
         if (s->sh.dependent_slice_segment_flag == 0 ||
@@ -490,7 +481,7 @@ int ff_hevc_cabac_init(HEVCLocalContext *lc, int ctb_addr_ts)
             if (s->threads_number == 1)
                 ret = cabac_reinit(lc);
             else {
-                ret = cabac_init_decoder(lc);
+                ret = ff_init_cabac_decoder(&lc->cc, data, size);
             }
             if (ret < 0)
                 return ret;
@@ -503,7 +494,7 @@ int ff_hevc_cabac_init(HEVCLocalContext *lc, int ctb_addr_ts)
                 if (s->threads_number == 1)
                     ret = cabac_reinit(lc);
                 else {
-                    ret = cabac_init_decoder(lc);
+                    ret = ff_init_cabac_decoder(&lc->cc, data, size);
                 }
                 if (ret < 0)
                     return ret;
@@ -683,7 +674,7 @@ int ff_hevc_part_mode_decode(HEVCLocalContext *lc, int log2_cb_size)
         return PART_NxN; // 000
     }
 
-    if (!lc->parent->ps.sps->amp_enabled_flag) {
+    if (!lc->parent->ps.sps->amp_enabled) {
         if (GET_CABAC(PART_MODE_OFFSET + 1)) // 01
             return PART_2NxN;
         return PART_Nx2N;
@@ -1011,10 +1002,10 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
 
     const uint8_t *scan_x_cg, *scan_y_cg, *scan_x_off, *scan_y_off;
 
-    ptrdiff_t stride = s->frame->linesize[c_idx];
+    ptrdiff_t stride = s->cur_frame->f->linesize[c_idx];
     int hshift = s->ps.sps->hshift[c_idx];
     int vshift = s->ps.sps->vshift[c_idx];
-    uint8_t *dst = &s->frame->data[c_idx][(y0 >> vshift) * stride +
+    uint8_t *dst = &s->cur_frame->f->data[c_idx][(y0 >> vshift) * stride +
                                           ((x0 >> hshift) << s->ps.sps->pixel_shift)];
     int16_t *coeffs = (int16_t*)(c_idx ? lc->edge_emu_buffer2 : lc->edge_emu_buffer);
     uint8_t significant_coeff_group_flag[8][8] = {{0}};
@@ -1091,7 +1082,7 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
         scale_m  = 16; // default when no custom scaling lists.
         dc_scale = 16;
 
-        if (s->ps.sps->scaling_list_enable_flag && !(transform_skip_flag && log2_trafo_size > 2)) {
+        if (s->ps.sps->scaling_list_enabled && !(transform_skip_flag && log2_trafo_size > 2)) {
             const ScalingList *sl = s->ps.pps->scaling_list_data_present_flag ?
             &s->ps.pps->scaling_list : &s->ps.sps->scaling_list;
             int matrix_id = lc->cu.pred_mode != MODE_INTRA;
@@ -1109,7 +1100,7 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
         dc_scale     = 0;
     }
 
-    if (lc->cu.pred_mode == MODE_INTER && s->ps.sps->explicit_rdpcm_enabled_flag &&
+    if (lc->cu.pred_mode == MODE_INTER && s->ps.sps->explicit_rdpcm_enabled &&
         (transform_skip_flag || lc->cu.cu_transquant_bypass_flag)) {
         explicit_rdpcm_flag = explicit_rdpcm_flag_decode(lc, c_idx);
         if (explicit_rdpcm_flag) {
@@ -1240,7 +1231,7 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
             };
             const uint8_t *ctx_idx_map_p;
             int scf_offset = 0;
-            if (s->ps.sps->transform_skip_context_enabled_flag &&
+            if (s->ps.sps->transform_skip_context_enabled &&
                 (transform_skip_flag || lc->cu.cu_transquant_bypass_flag)) {
                 ctx_idx_map_p = &ctx_idx_map[4 * 16];
                 if (c_idx == 0) {
@@ -1281,7 +1272,7 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
                 }
             }
             if (implicit_non_zero_coeff == 0) {
-                if (s->ps.sps->transform_skip_context_enabled_flag &&
+                if (s->ps.sps->transform_skip_context_enabled &&
                     (transform_skip_flag || lc->cu.cu_transquant_bypass_flag)) {
                     if (c_idx == 0) {
                         scf_offset = 42;
@@ -1326,7 +1317,7 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
             // initialize first elem of coeff_bas_level_greater1_flag
             int ctx_set = (i > 0 && c_idx == 0) ? 2 : 0;
 
-            if (s->ps.sps->persistent_rice_adaptation_enabled_flag) {
+            if (s->ps.sps->persistent_rice_adaptation_enabled) {
                 if (!transform_skip_flag && !lc->cu.cu_transquant_bypass_flag)
                     sb_type = 2 * (c_idx == 0 ? 1 : 0);
                 else
@@ -1355,7 +1346,7 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
 
             if (lc->cu.cu_transquant_bypass_flag ||
                 (lc->cu.pred_mode ==  MODE_INTRA  &&
-                 s->ps.sps->implicit_rdpcm_enabled_flag  &&  transform_skip_flag  &&
+                 s->ps.sps->implicit_rdpcm_enabled  &&  transform_skip_flag  &&
                  (pred_mode_intra == 10 || pred_mode_intra  ==  26 )) ||
                  explicit_rdpcm_flag)
                 sign_hidden = 0;
@@ -1381,8 +1372,8 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
 
                         trans_coeff_level += last_coeff_abs_level_remaining;
                         if (trans_coeff_level > (3 << c_rice_param))
-                            c_rice_param = s->ps.sps->persistent_rice_adaptation_enabled_flag ? c_rice_param + 1 : FFMIN(c_rice_param + 1, 4);
-                        if (s->ps.sps->persistent_rice_adaptation_enabled_flag && !rice_init) {
+                            c_rice_param = s->ps.sps->persistent_rice_adaptation_enabled ? c_rice_param + 1 : FFMIN(c_rice_param + 1, 4);
+                        if (s->ps.sps->persistent_rice_adaptation_enabled && !rice_init) {
                             int c_rice_p_init = lc->stat_coeff[sb_type] / 4;
                             if (last_coeff_abs_level_remaining >= (3 << c_rice_p_init))
                                 lc->stat_coeff[sb_type]++;
@@ -1397,8 +1388,8 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
 
                     trans_coeff_level = 1 + last_coeff_abs_level_remaining;
                     if (trans_coeff_level > (3 << c_rice_param))
-                        c_rice_param = s->ps.sps->persistent_rice_adaptation_enabled_flag ? c_rice_param + 1 : FFMIN(c_rice_param + 1, 4);
-                    if (s->ps.sps->persistent_rice_adaptation_enabled_flag && !rice_init) {
+                        c_rice_param = s->ps.sps->persistent_rice_adaptation_enabled ? c_rice_param + 1 : FFMIN(c_rice_param + 1, 4);
+                    if (s->ps.sps->persistent_rice_adaptation_enabled && !rice_init) {
                         int c_rice_p_init = lc->stat_coeff[sb_type] / 4;
                         if (last_coeff_abs_level_remaining >= (3 << c_rice_p_init))
                             lc->stat_coeff[sb_type]++;
@@ -1417,7 +1408,7 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
                     trans_coeff_level = -trans_coeff_level;
                 coeff_sign_flag <<= 1;
                 if(!lc->cu.cu_transquant_bypass_flag) {
-                    if (s->ps.sps->scaling_list_enable_flag && !(transform_skip_flag && log2_trafo_size > 2)) {
+                    if (s->ps.sps->scaling_list_enabled && !(transform_skip_flag && log2_trafo_size > 2)) {
                         if(y_c || x_c || log2_trafo_size < 4) {
                             switch(log2_trafo_size) {
                                 case 3: pos = (y_c << 3) + x_c; break;
@@ -1445,15 +1436,15 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
     }
 
     if (lc->cu.cu_transquant_bypass_flag) {
-        if (explicit_rdpcm_flag || (s->ps.sps->implicit_rdpcm_enabled_flag &&
+        if (explicit_rdpcm_flag || (s->ps.sps->implicit_rdpcm_enabled &&
                                     (pred_mode_intra == 10 || pred_mode_intra == 26))) {
-            int mode = s->ps.sps->implicit_rdpcm_enabled_flag ? (pred_mode_intra == 26) : explicit_rdpcm_dir_flag;
+            int mode = s->ps.sps->implicit_rdpcm_enabled ? (pred_mode_intra == 26) : explicit_rdpcm_dir_flag;
 
             s->hevcdsp.transform_rdpcm(coeffs, log2_trafo_size, mode);
         }
     } else {
         if (transform_skip_flag) {
-            int rot = s->ps.sps->transform_skip_rotation_enabled_flag &&
+            int rot = s->ps.sps->transform_skip_rotation_enabled &&
                       log2_trafo_size == 2 &&
                       lc->cu.pred_mode == MODE_INTRA;
             if (rot) {
@@ -1463,7 +1454,7 @@ void ff_hevc_hls_residual_coding(HEVCLocalContext *lc, int x0, int y0,
 
             s->hevcdsp.dequant(coeffs, log2_trafo_size);
 
-            if (explicit_rdpcm_flag || (s->ps.sps->implicit_rdpcm_enabled_flag &&
+            if (explicit_rdpcm_flag || (s->ps.sps->implicit_rdpcm_enabled &&
                                         lc->cu.pred_mode == MODE_INTRA &&
                                         (pred_mode_intra == 10 || pred_mode_intra == 26))) {
                 int mode = explicit_rdpcm_flag ? explicit_rdpcm_dir_flag : (pred_mode_intra == 26);

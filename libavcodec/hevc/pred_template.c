@@ -23,7 +23,7 @@
 #include "libavutil/pixdesc.h"
 
 #include "bit_depth_template.c"
-#include "hevcpred.h"
+#include "pred.h"
 
 #define POS(x, y) src[(x) + stride * (y)]
 
@@ -33,7 +33,7 @@ static av_always_inline void FUNC(intra_pred)(HEVCLocalContext *lc, int x0, int 
 #define PU(x) \
     ((x) >> s->ps.sps->log2_min_pu_size)
 #define MVF(x, y) \
-    (s->ref->tab_mvf[(x) + (y) * min_pu_width])
+    (s->cur_frame->tab_mvf[(x) + (y) * min_pu_width])
 #define MVF_PU(x, y) \
     MVF(PU(x0 + ((x) * (1 << hshift))), PU(y0 + ((y) * (1 << vshift))))
 #define IS_INTRA(x, y) \
@@ -87,8 +87,8 @@ do {                                  \
 
     int cur_tb_addr = MIN_TB_ADDR_ZS(x_tb, y_tb);
 
-    ptrdiff_t stride = s->frame->linesize[c_idx] / sizeof(pixel);
-    pixel *src = (pixel*)s->frame->data[c_idx] + x + y * stride;
+    ptrdiff_t stride = s->cur_frame->f->linesize[c_idx] / sizeof(pixel);
+    pixel *src = (pixel*)s->cur_frame->f->data[c_idx] + x + y * stride;
 
     int min_pu_width = s->ps.sps->min_pu_width;
 
@@ -285,14 +285,14 @@ do {                                  \
     top[-1] = left[-1];
 
     // Filtering process
-    if (!s->ps.sps->intra_smoothing_disabled_flag && (c_idx == 0  || s->ps.sps->chroma_format_idc == 3)) {
+    if (!s->ps.sps->intra_smoothing_disabled && (c_idx == 0  || s->ps.sps->chroma_format_idc == 3)) {
         if (mode != INTRA_DC && size != 4){
             int intra_hor_ver_dist_thresh[] = { 7, 1, 0 };
             int min_dist_vert_hor = FFMIN(FFABS((int)(mode - 26U)),
                                           FFABS((int)(mode - 10U)));
             if (min_dist_vert_hor > intra_hor_ver_dist_thresh[log2_size - 3]) {
                 int threshold = 1 << (BIT_DEPTH - 5);
-                if (s->ps.sps->sps_strong_intra_smoothing_enable_flag && c_idx == 0 &&
+                if (s->ps.sps->strong_intra_smoothing_enabled && c_idx == 0 &&
                     log2_size == 5 &&
                     FFABS(top[-1]  + top[63]  - 2 * top[31])  < threshold &&
                     FFABS(left[-1] + left[63] - 2 * left[31]) < threshold) {
