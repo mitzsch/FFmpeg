@@ -125,31 +125,31 @@ endfunc
 func ff_vp8_idct_dc_add4y_rvv, zve32x
         li       t0, 32
         vsetivli zero, 4, e16, mf2, ta, ma
+        li       t1, 4 - (128 << 3)
         vlse16.v v8, (a1), t0
-        vadd.vi  v8, v8, 4
+        vadd.vx  v8, v8, t1
         vsra.vi  v8, v8, 3
         # fall through
 endfunc
 
         .variant_cc ff_vp78_idct_dc_add4y_rvv
-# v8 = [dc0, dc1, dc2, dc3]
+# v8 = [dc0 - 128, dc1 - 128, dc2 - 128, dc3 - 128]
 func ff_vp78_idct_dc_add4y_rvv, zve32x
         vsetivli    zero, 16, e16, m2, ta, ma
         vid.v       v4
+        li          a4, 4
         vsrl.vi     v4, v4, 2
+        li          t1, 128
         vrgather.vv v0, v8, v4 # replicate each DC four times
         vsetvli     zero, zero, e8, m1, ta, ma
-        li          a4, 4
 1:
         vle8.v      v8, (a0)
         addi        a4, a4, -1
         vwaddu.wv   v16, v0, v8
         sh          zero, (a1)
-        vsetvli     zero, zero, e16, m2, ta, ma
-        vmax.vx     v16, v16, zero
+        vnclip.wi   v8, v16, 0
         addi        a1, a1, 32
-        vsetvli     zero, zero, e8, m1, ta, ma
-        vnclipu.wi  v8, v16, 0
+        vxor.vx     v8, v8, t1
         vse8.v      v8, (a0)
         add         a0, a0, a2
         bnez        a4, 1b
@@ -157,37 +157,39 @@ func ff_vp78_idct_dc_add4y_rvv, zve32x
         ret
 endfunc
 
-.macro vp8_idct_dc_add
-        vlse32.v      v0, (a0), a2
-        lh            a5, 0(a1)
-        sh            zero, 0(a1)
-        addi          a5, a5, 4
-        srai          t1, a5, 3
-        vsetivli      zero, 4*4, e16, m2, ta, ma
-        vzext.vf2     v2, v0
-        vadd.vx       v2, v2, t1
-        vmax.vx       v2, v2, zero
-        vsetvli       zero, zero, e8, m1, ta, ma
-        vnclipu.wi    v0, v2, 0
-        vsetivli      zero, 4, e8, mf4, ta, ma
-        vsse32.v      v0, (a0), a2
-.endm
-
-.macro vp8_idct_dc_addy
-        vp8_idct_dc_add
-        addi          a0, a0, 4
-        addi          a1, a1, 32
-.endm
-
 func ff_vp8_idct_dc_add4uv_rvv, zve32x
-        vsetivli      zero, 4, e8, mf4, ta, ma
-        vp8_idct_dc_addy
-        vp8_idct_dc_add
-        addi          a0, a0, -4
-        sh2add        a0, a2, a0
-        addi          a1, a1, 32
-        vp8_idct_dc_addy
-        vp8_idct_dc_add
+        li       t0, 32
+        vsetivli zero, 4, e16, mf2, ta, ma
+        li       t1, 4 - (128 << 3)
+        vlse16.v v8, (a1), t0
+        vadd.vx  v8, v8, t1
+        vsra.vi  v8, v8, 3
+        # fall through
+endfunc
+
+        .variant_cc ff_vp78_idct_dc_add4uv_rvv
+func ff_vp78_idct_dc_add4uv_rvv, zve64x
+        vsetivli    zero, 16, e16, m2, ta, ma
+        vid.v       v4
+        li          a4, 4
+        vsrl.vi     v4, v4, 2
+        li          t1, 128
+        vrgather.vv v0, v8, v4 # replicate each DC four times
+        slli        t2, a2, 2
+        vsetivli    zero, 2, e64, m1, ta, ma
+1:
+        vlse64.v    v8, (a0), t2
+        addi        a4, a4, -1
+        vsetivli    zero, 16, e8, m1, ta, ma
+        vwaddu.wv   v16, v0, v8
+        sh          zero, (a1)
+        vnclip.wi   v8, v16, 0
+        addi        a1, a1, 32
+        vxor.vx     v8, v8, t1
+        vsetivli    zero, 2, e64, m1, ta, ma
+        vsse64.v    v8, (a0), t2
+        add         a0, a0, a2
+        bnez        a4, 1b
 
         ret
 endfunc
