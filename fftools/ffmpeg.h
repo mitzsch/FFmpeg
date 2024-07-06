@@ -586,8 +586,6 @@ typedef struct OutputStream {
     FilterGraph  *fg_simple;
     OutputFilter *filter;
 
-    AVDictionary *encoder_opts;
-
     char *attachment_filename;
 
     /* stats */
@@ -710,8 +708,10 @@ void term_exit(void);
 
 void show_usage(void);
 
+int check_avoptions_used(const AVDictionary *opts, const AVDictionary *opts_used,
+                         void *logctx, int decode);
+
 int assert_file_overwrite(const char *filename);
-AVDictionary *strip_specifiers(const AVDictionary *dict);
 int find_codec(void *logctx, const char *name,
                enum AVMediaType type, int encoder, const AVCodec **codec);
 int parse_and_set_vsync(const char *arg, int *vsync_var, int file_idx, int st_idx, int is_global);
@@ -865,7 +865,7 @@ void update_benchmark(const char *fmt, ...);
            namestr, st->index, o->optname.opt_canon->name, spec[0] ? ":" : "", spec, so->u.type);\
 }
 
-#define MATCH_PER_STREAM_OPT(name, type, outvar, fmtctx, st)\
+#define MATCH_PER_STREAM_OPT_CLEAN(name, type, outvar, fmtctx, st, clean)\
 {\
     int _ret, _matches = 0, _match_idx;\
     for (int _i = 0; _i < o->name.nb_opt; _i++) {\
@@ -875,10 +875,15 @@ void update_benchmark(const char *fmt, ...);
             _match_idx = _i;\
             _matches++;\
         } else if (_ret < 0)\
-            return _ret;\
+            clean;\
     }\
     if (_matches > 1 && o->name.opt_canon)\
        WARN_MULTIPLE_OPT_USAGE(name, type, _match_idx, st);\
+}
+
+#define MATCH_PER_STREAM_OPT(name, type, outvar, fmtctx, st)\
+{\
+    MATCH_PER_STREAM_OPT_CLEAN(name, type, outvar, fmtctx, st, return _ret)\
 }
 
 const char *opt_match_per_type_str(const SpecifierOptList *sol,
