@@ -24,7 +24,26 @@
 
 #include "libavutil/attributes.h"
 #include "libavutil/cpu.h"
+#include "libavutil/riscv/cpu.h"
 #include "libavcodec/h264dsp.h"
+
+void ff_h264_v_loop_filter_luma_8_rvv(uint8_t *pix, ptrdiff_t stride,
+                                      int alpha, int beta, int8_t *tc0);
+void ff_h264_h_loop_filter_luma_8_rvv(uint8_t *pix, ptrdiff_t stride,
+                                      int alpha, int beta, int8_t *tc0);
+void ff_h264_h_loop_filter_luma_mbaff_8_rvv(uint8_t *pix, ptrdiff_t stride,
+                                            int alpha, int beta, int8_t *tc0);
+
+void ff_h264_idct_add_8_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_idct_add16_8_rvv(uint8_t *dst, const int *blockoffset,
+                              int16_t *block, int stride,
+                              const uint8_t nnzc[5 * 8]);
+void ff_h264_idct_add16intra_8_rvv(uint8_t *dst, const int *blockoffset,
+                                   int16_t *block, int stride,
+                                   const uint8_t nnzc[5 * 8]);
+void ff_h264_idct8_add4_8_rvv(uint8_t *dst, const int *blockoffset,
+                              int16_t *block, int stride,
+                              const uint8_t nnzc[5 * 8]);
 
 extern int ff_startcode_find_candidate_rvb(const uint8_t *, int);
 extern int ff_startcode_find_candidate_rvv(const uint8_t *, int);
@@ -38,8 +57,22 @@ av_cold void ff_h264dsp_init_riscv(H264DSPContext *dsp, const int bit_depth,
     if (flags & AV_CPU_FLAG_RVB_BASIC)
         dsp->startcode_find_candidate = ff_startcode_find_candidate_rvb;
 # if HAVE_RVV
-    if (flags & AV_CPU_FLAG_RVV_I32)
+    if (flags & AV_CPU_FLAG_RVV_I32) {
+        if (bit_depth == 8 && ff_rv_vlen_least(128)) {
+            dsp->h264_v_loop_filter_luma = ff_h264_v_loop_filter_luma_8_rvv;
+            dsp->h264_h_loop_filter_luma = ff_h264_h_loop_filter_luma_8_rvv;
+            dsp->h264_h_loop_filter_luma_mbaff =
+                ff_h264_h_loop_filter_luma_mbaff_8_rvv;
+
+            dsp->h264_idct_add = ff_h264_idct_add_8_rvv;
+#  if __riscv_xlen == 64
+            dsp->h264_idct_add16 = ff_h264_idct_add16_8_rvv;
+            dsp->h264_idct_add16intra = ff_h264_idct_add16intra_8_rvv;
+            dsp->h264_idct8_add4 = ff_h264_idct8_add4_8_rvv;
+#  endif
+        }
         dsp->startcode_find_candidate = ff_startcode_find_candidate_rvv;
+    }
 # endif
 #endif
 }
