@@ -52,6 +52,20 @@ void ff_h264_idct8_add4_8_rvv(uint8_t *dst, const int *blockoffset,
                               int16_t *block, int stride,
                               const uint8_t nnzc[5 * 8]);
 
+void ff_h264_idct_add_9_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_idct8_add_9_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_idct_add_10_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_idct8_add_10_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_idct_add_12_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_idct8_add_12_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_idct_add_14_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_idct8_add_14_rvv(uint8_t *dst, int16_t *block, int stride);
+
+void ff_h264_add_pixels8_8_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_add_pixels4_8_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_add_pixels8_16_rvv(uint8_t *dst, int16_t *block, int stride);
+void ff_h264_add_pixels4_16_rvv(uint8_t *dst, int16_t *block, int stride);
+
 extern int ff_startcode_find_candidate_rvb(const uint8_t *, int);
 extern int ff_startcode_find_candidate_rvv(const uint8_t *, int);
 
@@ -65,7 +79,9 @@ av_cold void ff_h264dsp_init_riscv(H264DSPContext *dsp, const int bit_depth,
         dsp->startcode_find_candidate = ff_startcode_find_candidate_rvb;
 # if HAVE_RVV
     if (flags & AV_CPU_FLAG_RVV_I32) {
-        if (bit_depth == 8 && ff_rv_vlen_least(128)) {
+        const bool zvl128b = ff_rv_vlen_least(128);
+
+        if (bit_depth == 8 && zvl128b) {
             for (int i = 0; i < 4; i++) {
                 dsp->weight_h264_pixels_tab[i] =
                     ff_h264_weight_funcs_8_rvv[i].weight;
@@ -85,7 +101,37 @@ av_cold void ff_h264dsp_init_riscv(H264DSPContext *dsp, const int bit_depth,
             dsp->h264_idct_add16intra = ff_h264_idct_add16intra_8_rvv;
             dsp->h264_idct8_add4 = ff_h264_idct8_add4_8_rvv;
 #  endif
+            if (flags & AV_CPU_FLAG_RVV_I64)
+                dsp->h264_add_pixels8_clear = ff_h264_add_pixels8_8_rvv;
+            dsp->h264_add_pixels4_clear = ff_h264_add_pixels4_8_rvv;
         }
+
+        if (bit_depth == 9) {
+            if (zvl128b)
+                dsp->h264_idct_add = ff_h264_idct_add_9_rvv;
+            dsp->h264_idct8_add = ff_h264_idct8_add_9_rvv;
+        }
+        if (bit_depth == 10) {
+            if (zvl128b)
+                dsp->h264_idct_add = ff_h264_idct_add_10_rvv;
+            dsp->h264_idct8_add = ff_h264_idct8_add_10_rvv;
+        }
+        if (bit_depth == 12) {
+            if (zvl128b)
+                dsp->h264_idct_add = ff_h264_idct_add_12_rvv;
+            dsp->h264_idct8_add = ff_h264_idct8_add_12_rvv;
+        }
+        if (bit_depth == 14) {
+            if (zvl128b)
+                dsp->h264_idct_add = ff_h264_idct_add_14_rvv;
+            dsp->h264_idct8_add = ff_h264_idct8_add_14_rvv;
+        }
+        if (bit_depth > 8 && zvl128b) {
+            dsp->h264_add_pixels8_clear = ff_h264_add_pixels8_16_rvv;
+            if (flags & AV_CPU_FLAG_RVV_I64)
+                dsp->h264_add_pixels4_clear = ff_h264_add_pixels4_16_rvv;
+        }
+
         dsp->startcode_find_candidate = ff_startcode_find_candidate_rvv;
     }
 # endif
