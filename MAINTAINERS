@@ -15,6 +15,17 @@ Please try to keep entries where you are the maintainer up to date!
 A (CC <address>) after the name means that the maintainer prefers to be CC-ed on
 patches and related discussions.
 
+(L <address>) *Mailing list* that is relevant to this area
+(W <address>) *Web-page* with status/info
+(B <address>) URI for where to file *bugs*. A web-page with detailed bug
+              filing info, a direct bug tracker link, or a mailto: URI.
+(P <address>) *Subsystem Profile* document for more details submitting
+              patches to the given subsystem. This is either an in-tree file,
+              or a URI. See Documentation/maintainer/maintainer-entry-profile.rst
+              for details.
+(T <address>) *SCM* tree type and location.
+              Type is one of: git, hg, quilt, stgit, topgit
+
 
 Applications
 ============
@@ -39,8 +50,8 @@ Miscellaneous Areas
 ===================
 
 documentation                           Stefano Sabatini, Mike Melanson, Timothy Gu, Gyan Doshi
-project server day to day operations    Árpád Gereöffy, Michael Niedermayer, Reimar Doeffinger, Alexander Strasser, Nikolay Aleksandrov, Timo Rothenpieler
-project server emergencies              Árpád Gereöffy, Reimar Doeffinger, Alexander Strasser, Nikolay Aleksandrov, Timo Rothenpieler
+project server day to day operations    (L: root@ffmpeg.org) Árpád Gereöffy, Michael Niedermayer, Reimar Doeffinger, Alexander Strasser, Nikolay Aleksandrov, Timo Rothenpieler
+project server emergencies              (L: root@ffmpeg.org) Árpád Gereöffy, Reimar Doeffinger, Alexander Strasser, Nikolay Aleksandrov, Timo Rothenpieler
 presets                                 Robert Swain
 metadata subsystem                      Aurelien Jacobs
 release management                      Michael Niedermayer
@@ -50,14 +61,14 @@ API tests                               Ludmila Glinskih
 Communication
 =============
 
-website                                 Deby Barbara Lepage
-fate.ffmpeg.org                         Timothy Gu
-Trac bug tracker                        Alexander Strasser, Michael Niedermayer, Carl Eugen Hoyos
-Patchwork                           [2] Andriy Gelman
-mailing lists                           Baptiste Coudurier
+website                                 (S: https://git.ffmpeg.org/ffmpeg-web) Deby Barbara Lepage
+fate.ffmpeg.org                         (L: fate-admin@ffmpeg.org) (W: https://fate.ffmpeg.org) (P: https://ffmpeg.org/fate.html) (S: https://git.ffmpeg.org/fateserver) Timothy Gu
+Trac bug tracker                        (W: https://trac.ffmpeg.org) Alexander Strasser, Michael Niedermayer, Carl Eugen Hoyos
+Patchwork                           [2] (W: https://patchwork.ffmpeg.org) Andriy Gelman
+mailing lists                           (W: https://ffmpeg.org/contact.html#MailingLists) Baptiste Coudurier
 Twitter                                 Reynaldo H. Verdejo Pinochet
 Launchpad                               Timothy Gu
-ffmpeg-security                     [2] Michael Niedermayer, Reimar Doeffinger
+ffmpeg-security                     [2] (L: ffmpeg-security@ffmpeg.org) (W: https://ffmpeg.org/security.html) Michael Niedermayer, Reimar Doeffinger
 
 
 libavutil
