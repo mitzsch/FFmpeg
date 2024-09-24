@@ -130,6 +130,8 @@ typedef struct StreamSpecifier {
 
     uint8_t              usable_only;
 
+    int                  disposition;
+
     char                *meta_key;
     char                *meta_val;
 
@@ -540,5 +542,7 @@ void remove_avoptions(AVDictionary **a, AVDictionary *b);
 
 /* Check if any keys exist in dictionary m */
 int check_avoptions(AVDictionary *m);
+
+int cmdutils_isalnum(char c);
 
 #endif /* FFTOOLS_CMDUTILS_H */

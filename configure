@@ -246,6 +246,7 @@ External library support:
   --enable-libklvanc       enable Kernel Labs VANC processing [no]
   --enable-libkvazaar      enable HEVC encoding via libkvazaar [no]
   --enable-liblc3          enable LC3 de/encoding via liblc3 [no]
+  --enable-liblcevc-dec    enable LCEVC decoding via liblcevc-dec [no]
   --enable-liblensfun      enable lensfun lens correction [no]
   --enable-libmodplug      enable ModPlug via libmodplug [no]
   --enable-libmp3lame      enable MP3 encoding via libmp3lame [no]
@@ -1930,6 +1931,7 @@ EXTERNAL_LIBRARY_LIST="
     libklvanc
     libkvazaar
     liblc3
+    liblcevc_dec
     libmodplug
     libmp3lame
     libmysofa
@@ -2117,8 +2119,6 @@ THREADS_LIST="
 "
 
 ATOMICS_LIST="
-    atomics_gcc
-    atomics_suncc
     atomics_win32
 "
 
@@ -2249,13 +2249,10 @@ ARCH_FEATURES="
 "
 
 BUILTIN_LIST="
-    atomic_cas_ptr
-    machine_rw_barrier
     MemoryBarrier
     mm_empty
     rdtsc
     sem_timedwait
-    sync_val_compare_and_swap
 "
 HAVE_LIST_CMDLINE="
     inline_asm
@@ -2639,6 +2636,7 @@ CONFIG_EXTRA="
     vp3dsp
     vp56dsp
     vp8dsp
+    vulkan_encode
     wma_freqs
     wmv2dsp
 "
@@ -2834,8 +2832,6 @@ valgrind_backtrace_conflict="optimizations"
 valgrind_backtrace_deps="valgrind_valgrind_h"
 
 # threading support
-atomics_gcc_if="sync_val_compare_and_swap"
-atomics_suncc_if="atomic_cas_ptr machine_rw_barrier"
 atomics_win32_if="MemoryBarrier"
 atomics_native_if_any="$ATOMICS_LIST"
 w32threads_deps="atomics_native"
@@ -3300,6 +3296,7 @@ qsvdec_select="qsv"
 qsvenc_select="qsv"
 qsvvpp_select="qsv"
 vaapi_encode_deps="vaapi"
+vulkan_encode_deps="vulkan"
 v4l2_m2m_deps="linux_videodev2_h sem_timedwait"
 
 bilateral_cuda_filter_deps="ffnvcodec"
@@ -3365,6 +3362,7 @@ h264_qsv_encoder_select="atsc_a53 qsvenc"
 h264_rkmpp_decoder_deps="rkmpp"
 h264_rkmpp_decoder_select="h264_mp4toannexb_bsf"
 h264_vaapi_encoder_select="atsc_a53 cbs_h264 vaapi_encode"
+h264_vulkan_encoder_select="cbs_h264 vulkan_encode"
 h264_v4l2m2m_decoder_deps="v4l2_m2m h264_v4l2_m2m"
 h264_v4l2m2m_decoder_select="h264_mp4toannexb_bsf"
 h264_v4l2m2m_encoder_deps="v4l2_m2m h264_v4l2_m2m"
@@ -3385,6 +3383,7 @@ hevc_rkmpp_decoder_deps="rkmpp"
 hevc_rkmpp_decoder_select="hevc_mp4toannexb_bsf"
 hevc_vaapi_encoder_deps="VAEncPictureParameterBufferHEVC"
 hevc_vaapi_encoder_select="atsc_a53 cbs_h265 vaapi_encode"
+hevc_vulkan_encoder_select="atsc_a53 cbs_h265 vulkan_encode"
 hevc_v4l2m2m_decoder_deps="v4l2_m2m hevc_v4l2_m2m"
 hevc_v4l2m2m_decoder_select="hevc_mp4toannexb_bsf"
 hevc_v4l2m2m_encoder_deps="v4l2_m2m hevc_v4l2_m2m"
@@ -3889,6 +3888,7 @@ identity_filter_select="scene_sad"
 interlace_filter_deps="gpl"
 kerndeint_filter_deps="gpl"
 ladspa_filter_deps="ladspa libdl"
+lcevc_filter_deps="liblcevc_dec"
 lensfun_filter_deps="liblensfun version3"
 libplacebo_filter_deps="libplacebo vulkan"
 lv2_filter_deps="lv2"
@@ -4027,7 +4027,7 @@ cws2fws_extralibs="zlib_extralibs"
 
 # libraries, in any order
 avcodec_deps="avutil"
-avcodec_suggest="libm stdatomic"
+avcodec_suggest="libm stdatomic liblcevc_dec"
 avdevice_deps="avformat avcodec avutil"
 avdevice_suggest="libm stdatomic"
 avfilter_deps="avutil"
@@ -4048,8 +4048,8 @@ avutil_extralibs="d3d11va_extralibs d3d12va_extralibs mediacodec_extralibs nanos
 
 # programs
 ffmpeg_deps="avcodec avfilter avformat threads"
-ffmpeg_select="aformat_filter anull_filter atrim_filter format_filter
-               hflip_filter null_filter
+ffmpeg_select="aformat_filter anull_filter atrim_filter crop_filter
+               format_filter hflip_filter null_filter rotate_filter
                transpose_filter trim_filter vflip_filter"
 ffmpeg_suggest="ole32 psapi shell32"
 ffplay_deps="avcodec avformat avfilter swscale swresample sdl2"
@@ -4549,37 +4549,49 @@ enabled ossfuzz && ! echo $CFLAGS | grep -q -- "-fsanitize="  && ! echo $CFLAGS 
     add_ldflags -fsanitize=address,undefined -fsanitize-coverage=trace-pc-guard,trace-cmp
 }
 
+add_sanitizer_flags(){
+    case "$1" in
+        asan)
+            add_cflags  -fsanitize=address
+            add_ldflags -fsanitize=address
+        ;;
+        lsan)
+            add_cflags  -fsanitize=leak
+            add_ldflags -fsanitize=leak
+        ;;
+        msan)
+            add_cflags  -fsanitize=memory -fsanitize-memory-track-origins
+            add_ldflags -fsanitize=memory
+        ;;
+        tsan)
+            add_cflags  -fsanitize=thread
+            add_ldflags -fsanitize=thread
+        ;;
+        usan)
+            add_cflags  -fsanitize=undefined
+            add_ldflags -fsanitize=undefined
+        ;;
+        ?*)
+            die "Unknown sanitizer $1"
+        ;;
+    esac
+}
+
 case "$toolchain" in
-    *-asan)
-        cc_default="${toolchain%-asan}"
-        add_cflags  -fsanitize=address
-        add_ldflags -fsanitize=address
+    clang-*)
+        add_sanitizer_flags "${toolchain#clang-}"
+        cc_default="clang"
+        cxx_default="clang++"
     ;;
-    *-lsan)
-        cc_default="${toolchain%-lsan}"
-        add_cflags  -fsanitize=leak
-        add_ldflags -fsanitize=leak
-    ;;
-    *-msan)
-        cc_default="${toolchain%-msan}"
-        add_cflags  -fsanitize=memory -fsanitize-memory-track-origins
-        add_ldflags -fsanitize=memory
-    ;;
-    *-tsan)
-        cc_default="${toolchain%-tsan}"
-        add_cflags  -fsanitize=thread
-        add_ldflags -fsanitize=thread
-        case "$toolchain" in
-            gcc-tsan)
-                add_cflags  -fPIC
-                add_ldflags -fPIC
-                ;;
-        esac
-    ;;
-    *-usan)
-        cc_default="${toolchain%-usan}"
-        add_cflags  -fsanitize=undefined
-        add_ldflags -fsanitize=undefined
+    gcc-*)
+        add_sanitizer_flags "${toolchain#gcc-}"
+        cc_default="gcc"
+        cxx_default="g++"
+        # In case of tsan with gcc, PIC has to be enabled
+        if [ "${toolchain#gcc-}" = "tsan" ]; then
+            add_cflags  -fPIC
+            add_ldflags -fPIC
+        fi
     ;;
     valgrind-*)
         target_exec_default="valgrind"
@@ -6133,8 +6145,10 @@ enabled pic && enable_weak_pic
 test_cc <<EOF || die "Symbol mangling check failed."
 int ff_extern;
 EOF
-sym=$($nm $TMPO | awk '/ff_extern/{ print substr($0, match($0, /[^ \t]*ff_extern/)) }')
+sym=$($nm $TMPO | awk '/[ \t]+[^ \t]?ff_extern$/{ print substr($0, match($0, /[^ \t]?ff_extern$/)) }')
 extern_prefix=${sym%%ff_extern*}
+
+log "Symbol prefix detected as: '${extern_prefix}'"
 
 ! disabled inline_asm && check_inline_asm inline_asm '"" ::'
 
@@ -6507,10 +6521,7 @@ if ! disabled network; then
     fi
 fi
 
-check_builtin atomic_cas_ptr atomic.h "void **ptr; void *oldval, *newval; atomic_cas_ptr(ptr, oldval, newval)"
-check_builtin machine_rw_barrier mbarrier.h "__machine_rw_barrier()"
 check_builtin MemoryBarrier windows.h "MemoryBarrier()"
-check_builtin sync_val_compare_and_swap "" "int *ptr; int oldval, newval; __sync_val_compare_and_swap(ptr, oldval, newval)"
 check_builtin gmtime_r time.h "time_t *time; struct tm *tm; gmtime_r(time, tm)"
 check_builtin localtime_r time.h "time_t *time; struct tm *tm; localtime_r(time, tm)"
 
@@ -6903,6 +6914,7 @@ enabled libklvanc         && require libklvanc libklvanc/vanc.h klvanc_context_c
 enabled libkvazaar        && require_pkg_config libkvazaar "kvazaar >= 2.0.0" kvazaar.h kvz_api_get
 enabled liblc3            && require_pkg_config liblc3 "lc3 >= 1.1.0" lc3.h lc3_hr_setup_encoder
 enabled liblensfun        && require_pkg_config liblensfun lensfun lensfun.h lf_db_create
+enabled liblcevc_dec      && require_pkg_config liblcevc_dec "lcevc_dec >= 2.0.0" "LCEVC/lcevc_dec.h" LCEVC_CreateDecoder
 
 if enabled libmfx && enabled libvpl; then
    die "ERROR: can not use libmfx and libvpl together"
@@ -7768,20 +7780,17 @@ for thread in $THREADS_LIST; do
 done
 
 if disabled stdatomic; then
-    if enabled atomics_gcc; then
-        add_cppflags '-I\$(SRC_PATH)/compat/atomics/gcc'
-    elif enabled atomics_win32; then
+    if enabled atomics_win32; then
         add_cppflags '-I\$(SRC_PATH)/compat/atomics/win32'
-    elif enabled atomics_suncc; then
-        add_cppflags '-I\$(SRC_PATH)/compat/atomics/suncc'
-    elif enabled pthreads; then
-        add_compat atomics/pthread/stdatomic.o
-        add_cppflags '-I\$(SRC_PATH)/compat/atomics/pthread'
     else
         enabled threads && die "Threading is enabled, but no atomics are available"
         add_cppflags '-I\$(SRC_PATH)/compat/atomics/dummy'
     fi
 fi
+
+check_builtin stdbit "stdbit.h assert.h" \
+    'static_assert(__STDC_VERSION_STDBIT_H__ >= 202311L, "Compiler lacks stdbit.h")' || \
+    add_cppflags '-I\$(SRC_PATH)/compat/stdbit'
 
 # Check if requested libraries were found.
 for lib in $AUTODETECT_LIBS; do
