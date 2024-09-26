@@ -783,8 +783,7 @@ static int set_channel_layout(OutputFilterPriv *f, const AVChannelLayout *layout
     return 0;
 }
 
-int ofilter_bind_ost(OutputFilter *ofilter, OutputStream *ost,
-                     unsigned sched_idx_enc,
+int ofilter_bind_enc(OutputFilter *ofilter, unsigned sched_idx_enc,
                      const OutputFilterOptions *opts)
 {
     OutputFilterPriv *ofp = ofp_from_ofilter(ofilter);
@@ -793,7 +792,8 @@ int ofilter_bind_ost(OutputFilter *ofilter, OutputStream *ost,
     int ret;
 
     av_assert0(!ofilter->bound);
-    av_assert0(ofilter->type == ost->type);
+    av_assert0(!opts->enc ||
+               ofilter->type == opts->enc->type);
 
     ofilter->bound = 1;
     av_freep(&ofilter->linklabel);
@@ -854,10 +854,9 @@ int ofilter_bind_ost(OutputFilter *ofilter, OutputStream *ost,
             return AVERROR(ENOMEM);
 
         ofp->fps.vsync_method        = opts->vsync_method;
-        ofp->fps.framerate           = ost->frame_rate;
-        ofp->fps.framerate_max       = ost->max_frame_rate;
-        ofp->fps.framerate_supported = ost->force_fps || !opts->enc ?
-                                       NULL : opts->frame_rates;
+        ofp->fps.framerate           = opts->frame_rate;
+        ofp->fps.framerate_max       = opts->max_frame_rate;
+        ofp->fps.framerate_supported = opts->frame_rates;
 
         // reduce frame rate for mpeg4 to be within the spec limits
         if (opts->enc && opts->enc->id == AV_CODEC_ID_MPEG4)
@@ -1181,25 +1180,27 @@ fail:
     return 0;
 }
 
-int init_simple_filtergraph(InputStream *ist, OutputStream *ost,
-                            char *graph_desc,
-                            Scheduler *sch, unsigned sched_idx_enc,
-                            const OutputFilterOptions *opts)
+int fg_create_simple(FilterGraph **pfg,
+                     InputStream *ist,
+                     char *graph_desc,
+                     Scheduler *sch, unsigned sched_idx_enc,
+                     const OutputFilterOptions *opts)
 {
+    const enum AVMediaType type = ist->par->codec_type;
     FilterGraph *fg;
     FilterGraphPriv *fgp;
     int ret;
 
-    ret = fg_create(&ost->fg_simple, graph_desc, sch);
+    ret = fg_create(pfg, graph_desc, sch);
     if (ret < 0)
         return ret;
-    fg  = ost->fg_simple;
+    fg  = *pfg;
     fgp = fgp_from_fg(fg);
 
     fgp->is_simple = 1;
 
     snprintf(fgp->log_name, sizeof(fgp->log_name), "%cf%s",
-             av_get_media_type_string(ost->type)[0], opts->name);
+             av_get_media_type_string(type)[0], opts->name);
 
     if (fg->nb_inputs != 1 || fg->nb_outputs != 1) {
         av_log(fg, AV_LOG_ERROR, "Simple filtergraph '%s' was expected "
@@ -1209,21 +1210,19 @@ int init_simple_filtergraph(InputStream *ist, OutputStream *ost,
                graph_desc, fg->nb_inputs, fg->nb_outputs);
         return AVERROR(EINVAL);
     }
-    if (fg->outputs[0]->type != ost->type) {
+    if (fg->outputs[0]->type != type) {
         av_log(fg, AV_LOG_ERROR, "Filtergraph has a %s output, cannot connect "
                "it to %s output stream\n",
                av_get_media_type_string(fg->outputs[0]->type),
-               av_get_media_type_string(ost->type));
+               av_get_media_type_string(type));
         return AVERROR(EINVAL);
     }
-
-    ost->filter = fg->outputs[0];
 
     ret = ifilter_bind_ist(fg->inputs[0], ist, opts->vs);
     if (ret < 0)
         return ret;
 
-    ret = ofilter_bind_ost(fg->outputs[0], ost, sched_idx_enc, opts);
+    ret = ofilter_bind_enc(fg->outputs[0], sched_idx_enc, opts);
     if (ret < 0)
         return ret;
 
@@ -1351,8 +1350,10 @@ static int fg_complex_bind_input(FilterGraph *fg, InputFilter *ifilter)
     } else {
         ist = ist_find_unused(type);
         if (!ist) {
-            av_log(fg, AV_LOG_FATAL, "Cannot find a matching stream for "
-                   "unlabeled input pad %s\n", ifilter->name);
+            av_log(fg, AV_LOG_FATAL,
+                   "Cannot find an unused %s input stream to feed the "
+                   "unlabeled input pad %s.\n",
+                   av_get_media_type_string(type), ifilter->name);
             return AVERROR(EINVAL);
         }
 
