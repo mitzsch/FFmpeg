@@ -52,7 +52,6 @@ func ff_h264_weight_pixels_simple_8_rvv, zve32x, b
         vse8.v      v8, (a0)
         vse8.v      v9, (t0)
         sh1add  a0, a1, a0
-        add     a0, a0, a1
         bnez    a2, 1b
 
         ret
@@ -288,7 +287,6 @@ func ff_h264_v_loop_filter_\type\()_8_rvv, zve32x
         vsetivli  zero, 4 * \inners, e8, \e8mul, ta, ma
         vle8.v    v11, (a0)
         sub       t2, t3, a1
-        vid.v     v0
         vle8.v    v10, (t3)
         add       t5, a0, a1
         vle8.v    v9, (t2)
