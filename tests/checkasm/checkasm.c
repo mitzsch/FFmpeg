@@ -363,6 +363,8 @@ static const struct {
 #elif ARCH_LOONGARCH
     { "LSX",      "lsx",      AV_CPU_FLAG_LSX },
     { "LASX",     "lasx",     AV_CPU_FLAG_LASX },
+#elif ARCH_WASM
+    { "SIMD128",    "simd128",  AV_CPU_FLAG_SIMD128 },
 #endif
     { NULL }
 };
@@ -629,34 +631,32 @@ static inline double avg_cycles_per_call(const CheckasmPerf *const p)
 static void print_benchs(CheckasmFunc *f)
 {
     if (f) {
+        CheckasmFuncVersion *v = &f->versions;
+        const CheckasmPerf *p = &v->perf;
+        const double baseline = avg_cycles_per_call(p);
+        double decicycles;
+
         print_benchs(f->child[0]);
 
-        /* Only print functions with at least one assembly version */
-        if (f->versions.cpu || f->versions.next) {
-            CheckasmFuncVersion *v = &f->versions;
-            const CheckasmPerf *p = &v->perf;
-            const double baseline = avg_cycles_per_call(p);
-            double decicycles;
-            do {
-                if (p->iterations) {
-                    p = &v->perf;
-                    decicycles = avg_cycles_per_call(p);
-                    if (state.csv || state.tsv) {
-                        const char sep = state.csv ? ',' : '\t';
-                        printf("%s%c%s%c%.1f\n", f->name, sep,
-                               cpu_suffix(v->cpu), sep,
-                               decicycles / 10.0);
-                    } else {
-                        const int pad_length = 10 + 50 -
-                            printf("%s_%s:", f->name, cpu_suffix(v->cpu));
-                        const double ratio = decicycles ?
-                            baseline / decicycles : 0.0;
-                        printf("%*.1f (%5.2fx)\n", FFMAX(pad_length, 0),
-                            decicycles / 10.0, ratio);
-                    }
+        do {
+            if (p->iterations) {
+                p = &v->perf;
+                decicycles = avg_cycles_per_call(p);
+                if (state.csv || state.tsv) {
+                    const char sep = state.csv ? ',' : '\t';
+                    printf("%s%c%s%c%.1f\n", f->name, sep,
+                           cpu_suffix(v->cpu), sep,
+                           decicycles / 10.0);
+                } else {
+                    const int pad_length = 10 + 50 -
+                        printf("%s_%s:", f->name, cpu_suffix(v->cpu));
+                    const double ratio = decicycles ?
+                        baseline / decicycles : 0.0;
+                    printf("%*.1f (%5.2fx)\n", FFMAX(pad_length, 0),
+                        decicycles / 10.0, ratio);
                 }
-            } while ((v = v->next));
-        }
+            }
+        } while ((v = v->next));
 
         print_benchs(f->child[1]);
     }
@@ -769,7 +769,7 @@ static LONG NTAPI signal_handler(EXCEPTION_POINTERS *e) {
     return EXCEPTION_CONTINUE_EXECUTION; /* never reached, but shuts up gcc */
 }
 #endif
-#else
+#elif !defined(_WASI_EMULATED_SIGNAL)
 static void signal_handler(int s);
 
 static const struct sigaction signal_handler_act = {
@@ -932,7 +932,7 @@ int main(int argc, char *argv[])
 #if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
     AddVectoredExceptionHandler(0, signal_handler);
 #endif
-#else
+#elif !defined(_WASI_EMULATED_SIGNAL)
     sigaction(SIGBUS,  &signal_handler_act, NULL);
     sigaction(SIGFPE,  &signal_handler_act, NULL);
     sigaction(SIGILL,  &signal_handler_act, NULL);

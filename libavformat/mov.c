@@ -60,6 +60,7 @@
 #include "internal.h"
 #include "avio_internal.h"
 #include "demux.h"
+#include "dvdclut.h"
 #include "iamf_parse.h"
 #include "iamf_reader.h"
 #include "dovi_isom.h"
@@ -2842,54 +2843,6 @@ static void mov_parse_stsd_subtitle(MOVContext *c, AVIOContext *pb,
     st->codecpar->height = sc->height;
 }
 
-static uint32_t yuv_to_rgba(uint32_t ycbcr)
-{
-    uint8_t r, g, b;
-    int y, cb, cr;
-
-    y  = (ycbcr >> 16) & 0xFF;
-    cr = (ycbcr >> 8)  & 0xFF;
-    cb =  ycbcr        & 0xFF;
-
-    b = av_clip_uint8((1164 * (y - 16)                     + 2018 * (cb - 128)) / 1000);
-    g = av_clip_uint8((1164 * (y - 16) -  813 * (cr - 128) -  391 * (cb - 128)) / 1000);
-    r = av_clip_uint8((1164 * (y - 16) + 1596 * (cr - 128)                    ) / 1000);
-
-    return (r << 16) | (g << 8) | b;
-}
-
-static int mov_rewrite_dvd_sub_extradata(AVStream *st)
-{
-    char buf[256] = {0};
-    uint8_t *src = st->codecpar->extradata;
-    int i, ret;
-
-    if (st->codecpar->extradata_size != 64)
-        return 0;
-
-    if (st->codecpar->width > 0 &&  st->codecpar->height > 0)
-        snprintf(buf, sizeof(buf), "size: %dx%d\n",
-                 st->codecpar->width, st->codecpar->height);
-    av_strlcat(buf, "palette: ", sizeof(buf));
-
-    for (i = 0; i < 16; i++) {
-        uint32_t yuv = AV_RB32(src + i * 4);
-        uint32_t rgba = yuv_to_rgba(yuv);
-
-        av_strlcatf(buf, sizeof(buf), "%06"PRIx32"%s", rgba, i != 15 ? ", " : "");
-    }
-
-    if (av_strlcat(buf, "\n", sizeof(buf)) >= sizeof(buf))
-        return 0;
-
-    ret = ff_alloc_extradata(st->codecpar, strlen(buf));
-    if (ret < 0)
-        return ret;
-    memcpy(st->codecpar->extradata, buf, st->codecpar->extradata_size);
-
-    return 0;
-}
-
 static int mov_parse_stsd_data(MOVContext *c, AVIOContext *pb,
                                 AVStream *st, MOVStreamContext *sc,
                                 int64_t size)
@@ -4690,7 +4643,9 @@ static void mov_build_index(MOVContext *mov, AVStream *st)
     unsigned int stps_index = 0;
     unsigned int i, j;
     uint64_t stream_size = 0;
+    MOVStts *stts_data_old = sc->stts_data;
     MOVCtts *ctts_data_old = sc->ctts_data;
+    unsigned int stts_count_old = sc->stts_count;
     unsigned int ctts_count_old = sc->ctts_count;
 
     int ret = build_open_gop_key_points(st);
@@ -4794,6 +4749,30 @@ static void mov_build_index(MOVContext *mov, AVStream *st)
                                    &sc->ctts_allocated_size, 1,
                                    ctts_data_old[i].offset);
             av_free(ctts_data_old);
+        }
+        if (stts_data_old) {
+            // Expand stts entries such that we have a 1-1 mapping with samples
+            if (sc->sample_count >= UINT_MAX / sizeof(*sc->stts_data))
+                return;
+            sc->stts_count = 0;
+            sc->stts_allocated_size = 0;
+            sc->stts_data = av_fast_realloc(NULL, &sc->stts_allocated_size,
+                                    sc->sample_count * sizeof(*sc->stts_data));
+            if (!sc->stts_data) {
+                av_free(stts_data_old);
+                return;
+            }
+
+            memset((uint8_t*)(sc->stts_data), 0, sc->stts_allocated_size);
+
+            for (i = 0; i < stts_count_old &&
+                        sc->stts_count < sc->sample_count; i++)
+                for (j = 0; j < stts_data_old[i].count &&
+                            sc->stts_count < sc->sample_count; j++)
+                    add_stts_entry(&sc->stts_data, &sc->stts_count,
+                                   &sc->stts_allocated_size, 1,
+                                   stts_data_old[i].duration);
+            av_free(stts_data_old);
         }
 
         for (i = 0; i < sc->chunk_count; i++) {
@@ -5260,6 +5239,7 @@ static int mov_read_trak(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     }
 
     if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+        int stts_constant = !!sc->stts_count;
         if (sc->h_spacing && sc->v_spacing)
             av_reduce(&st->sample_aspect_ratio.num, &st->sample_aspect_ratio.den,
                       sc->h_spacing, sc->v_spacing, INT_MAX);
@@ -5272,7 +5252,12 @@ static int mov_read_trak(MOVContext *c, AVIOContext *pb, MOVAtom atom)
         }
 
 #if FF_API_R_FRAME_RATE
-        if (sc->stts_count == 1 || (sc->stts_count == 2 && sc->stts_data[1].count == 1))
+        for (int i = 1; sc->stts_count && i < sc->stts_count - 1; i++) {
+            if (sc->stts_data[i].duration == sc->stts_data[0].duration)
+                continue;
+            stts_constant = 0;
+        }
+        if (stts_constant)
             av_reduce(&st->r_frame_rate.num, &st->r_frame_rate.den,
                       sc->time_scale, sc->stts_data[0].duration, INT_MAX);
 #endif
@@ -5303,9 +5288,14 @@ static int mov_read_trak(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 
     // If the duration of the mp3 packets is not constant, then they could need a parser
     if (st->codecpar->codec_id == AV_CODEC_ID_MP3
-        && sc->stts_count > 3
-        && sc->stts_count*10 > st->nb_frames
         && sc->time_scale == st->codecpar->sample_rate) {
+        int stts_constant = 1;
+        for (int i = 1; i < sc->stts_count; i++) {
+            if (sc->stts_data[i].duration == sc->stts_data[0].duration)
+                continue;
+            stts_constant = 0;
+        }
+        if (!stts_constant)
             ffstream(st)->need_parsing = AVSTREAM_PARSE_FULL;
     }
     /* Do not need those anymore. */
@@ -6003,10 +5993,7 @@ static int mov_read_trun(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             pts = AV_NOPTS_VALUE;
         }
 
-        if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
-            keyframe = 1;
-        else
-            keyframe =
+        keyframe =
                 !(sample_flags & (MOV_FRAG_SAMPLE_FLAG_IS_NON_SYNC |
                                   MOV_FRAG_SAMPLE_FLAG_DEPENDS_YES));
         if (keyframe) {
@@ -10591,6 +10578,7 @@ static int mov_read_header(AVFormatContext *s)
         AVStream *st = s->streams[i];
         FFStream *const sti = ffstream(st);
         MOVStreamContext *sc = st->priv_data;
+        uint32_t dvdsub_clut[FF_DVDCLUT_CLUT_LEN] = {0};
         fix_timescale(mov, sc);
         if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
             st->codecpar->codec_id   == AV_CODEC_ID_AAC) {
@@ -10604,8 +10592,22 @@ static int mov_read_header(AVFormatContext *s)
                 st->codecpar->width  = sc->width;
                 st->codecpar->height = sc->height;
             }
-            if (st->codecpar->codec_id == AV_CODEC_ID_DVD_SUBTITLE) {
-                if ((err = mov_rewrite_dvd_sub_extradata(st)) < 0)
+            if (st->codecpar->codec_id == AV_CODEC_ID_DVD_SUBTITLE &&
+                st->codecpar->extradata_size == FF_DVDCLUT_CLUT_SIZE) {
+
+                for (j = 0; j < FF_DVDCLUT_CLUT_LEN; j++)
+                    dvdsub_clut[j] = AV_RB32(st->codecpar->extradata + j * 4);
+
+                err = ff_dvdclut_yuv_to_rgb(dvdsub_clut, FF_DVDCLUT_CLUT_SIZE);
+                if (err < 0)
+                    return err;
+
+                av_freep(&st->codecpar->extradata);
+                st->codecpar->extradata_size = 0;
+
+                err = ff_dvdclut_palette_extradata_cat(dvdsub_clut, FF_DVDCLUT_CLUT_SIZE,
+                                                       st->codecpar);
+                if (err < 0)
                     return err;
             }
         }
