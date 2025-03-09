@@ -419,7 +419,7 @@ av_cold int ff_ffv1_write_extradata(AVCodecContext *avctx)
         if (f->version == 3) {
             f->micro_version = 4;
         } else if (f->version == 4)
-            f->micro_version = 3;
+            f->micro_version = 4;
         f->combined_version += f->micro_version;
         put_symbol(&c, state, f->micro_version, 0);
     }
@@ -867,6 +867,8 @@ av_cold int ff_ffv1_encode_setup_plane_info(AVCodecContext *avctx,
             s->bits_per_raw_sample = 14;
     case AV_PIX_FMT_GBRP16:
     case AV_PIX_FMT_GBRAP16:
+    case AV_PIX_FMT_GBRPF16:
+    case AV_PIX_FMT_GBRAPF16:
         if (!avctx->bits_per_raw_sample && !s->bits_per_raw_sample)
             s->bits_per_raw_sample = 16;
         else if (!s->bits_per_raw_sample)
@@ -877,7 +879,11 @@ av_cold int ff_ffv1_encode_setup_plane_info(AVCodecContext *avctx,
         if (s->bits_per_raw_sample >= 16) {
             s->use32bit = 1;
         }
+        s->flt     = !!(desc->flags & AV_PIX_FMT_FLAG_FLOAT);
         s->version = FFMAX(s->version, 1);
+
+        if (s->flt)
+            s->version = FFMAX(s->version, 4);
         break;
     default:
         av_log(avctx, AV_LOG_ERROR, "format %s not supported\n",
@@ -940,6 +946,8 @@ static int encode_init_internal(AVCodecContext *avctx)
         }
 
         ff_build_rac_states(&s->slices[j].c, 0.05 * (1LL << 32), 256 - 8);
+
+        s->slices[j].remap = s->flt;
     }
 
     if ((ret = ff_ffv1_init_slices_state(s)) < 0)
@@ -994,6 +1002,7 @@ static void encode_slice_header(FFV1Context *f, FFV1SliceContext *sc)
             put_symbol(c, state, sc->slice_rct_by_coef, 0);
             put_symbol(c, state, sc->slice_rct_ry_coef, 0);
         }
+        put_symbol(c, state, sc->remap, 0);
     }
 }
 
@@ -1412,6 +1421,7 @@ const FFCodec ff_ffv1_encoder = {
         AV_PIX_FMT_GRAY9,
         AV_PIX_FMT_YUV420P14, AV_PIX_FMT_YUV422P14, AV_PIX_FMT_YUV444P14,
         AV_PIX_FMT_YUV440P10, AV_PIX_FMT_YUV440P12,
+        AV_PIX_FMT_GBRPF16,
         AV_PIX_FMT_NONE
 
     },
