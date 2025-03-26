@@ -1,6 +1,4 @@
 /*
- * Copyright (c) 2002 The FFmpeg Project
- *
  * This file is part of FFmpeg.
  *
  * FFmpeg is free software; you can redistribute it and/or
@@ -18,14 +16,20 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVCODEC_WMV2ENC_H
-#define AVCODEC_WMV2ENC_H
+#ifndef AVFORMAT_CBS_H
+#define AVFORMAT_CBS_H
 
-#include "mpegvideo.h"
+#define CBS_PREFIX lavf_cbs
+#define CBS_WRITE 0
+#define CBS_TRACE 0
+#define CBS_H264 0
+#define CBS_H265 0
+#define CBS_H266 0
+#define CBS_JPEG 0
+#define CBS_MPEG2 0
+#define CBS_VP8 0
+#define CBS_VP9 0
 
-int ff_wmv2_encode_picture_header(MpegEncContext * s);
-void ff_wmv2_encode_mb(MpegEncContext * s, int16_t block[6][64],
-                       int motion_x, int motion_y);
+#include "libavcodec/cbs.h"
 
-
-#endif
+#endif /* AVFORMAT_CBS_H */
