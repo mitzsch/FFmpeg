@@ -1268,6 +1268,7 @@ typedef struct RemapEncoderState {
     int run1final;
     int64_t run1start_i;
     int64_t run1start_last_val;
+    int run1start_mul_index;
 } RemapEncoderState;
 
 static inline void copy_state(RemapEncoderState *dst, const RemapEncoderState *src)
@@ -1287,15 +1288,7 @@ static inline void copy_state(RemapEncoderState *dst, const RemapEncoderState *s
     dst->run1final      = src->run1final;
     dst->run1start_i    = src->run1start_i;
     dst->run1start_last_val = src->run1start_last_val;
-}
-
-static inline void encode_mul(RemapEncoderState *s, int mul_index)
-{
-    av_assert2(s->mul[ mul_index ]);
-    if (s->mul[ mul_index ] < 0) {
-        s->mul[ mul_index ] *= -1;
-        put_symbol_inline(&s->rc, s->state[0][2], s->mul[ mul_index ], 0, NULL, NULL);
-    }
+    dst->run1start_mul_index = src->run1start_mul_index;
 }
 
 static int encode_float32_remap_segment(FFV1SliceContext *sc,
@@ -1324,7 +1317,9 @@ static int encode_float32_remap_segment(FFV1SliceContext *sc,
             if (s.last_val == 0xFFFFFFFF) {
                 break;
             } else {
-                val = 1LL<<32;
+                val = s.last_val + ((1LL<<32) - s.last_val + current_mul - 1) / current_mul * current_mul;
+                av_assert2(val >= (1LL<<32));
+                val += s.lu * current_mul; //ensure a run1 ends
             }
         } else
             val = sc->unit[s.p][s.i].val;
@@ -1344,6 +1339,7 @@ static int encode_float32_remap_segment(FFV1SliceContext *sc,
                 if (!s.run) {
                     s.run1start_i        = s.i - 1;
                     s.run1start_last_val = s.last_val;
+                    s.run1start_mul_index= s.current_mul_index;
                 }
                 if (step == 1) {
                     if (s.run1final) {
@@ -1362,9 +1358,7 @@ static int encode_float32_remap_segment(FFV1SliceContext *sc,
                         put_symbol_inline(&s.rc, s.state[s.lu][0], s.run, 0, NULL, NULL);
                         s.i                 = s.run1start_i;
                         s.last_val          = s.run1start_last_val; // we could compute this instead of storing
-                        av_assert2(s.last_val >= 0 && s.i > 0); // first state is zero run so we cant have this in a one run and current_mul_index would be -1
-                        if (s.run)
-                            s.current_mul_index = ((s.last_val + 1) * s.mul_count) >> 32;
+                        s.current_mul_index = s.run1start_mul_index;
                     }
                     s.run1final ^= 1;
 
@@ -1386,7 +1380,12 @@ static int encode_float32_remap_segment(FFV1SliceContext *sc,
             s.last_val = val;
             s.current_mul_index = ((s.last_val + 1) * s.mul_count) >> 32;
             if (!s.run || s.run1final) {
-                encode_mul(&s, s.current_mul_index);
+                av_assert2(s.mul[ s.current_mul_index ]);
+                if (s.mul[ s.current_mul_index ] < 0) {
+                    av_assert2(s.i < s.pixel_num);
+                    s.mul[ s.current_mul_index ] *= -1;
+                    put_symbol_inline(&s.rc, s.state[0][2], s.mul[ s.current_mul_index ], 0, NULL, NULL);
+                }
                 s.compact_index ++;
             }
         }

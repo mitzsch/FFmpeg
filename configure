@@ -2286,11 +2286,6 @@ HEADERS_LIST="
     cdio_paranoia_paranoia_h
     cuda_h
     dispatch_dispatch_h
-    dev_bktr_ioctl_bt848_h
-    dev_bktr_ioctl_meteor_h
-    dev_ic_bt8xx_h
-    dev_video_bktr_ioctl_bt848_h
-    dev_video_meteor_ioctl_meteor_h
     direct_h
     dirent_h
     dxgidebug_h
@@ -2300,11 +2295,8 @@ HEADERS_LIST="
     io_h
     linux_dma_buf_h
     linux_perf_event_h
-    machine_ioctl_bt848_h
-    machine_ioctl_meteor_h
     malloc_h
     opencv2_core_core_c_h
-    OpenGL_gl3_h
     poll_h
     pthread_np_h
     sys_hwprobe_h
@@ -3749,7 +3741,6 @@ avfoundation_indev_suggest="coregraphics applicationservices"
 avfoundation_indev_extralibs="-framework Foundation"
 audiotoolbox_outdev_deps="audiotoolbox pthreads"
 audiotoolbox_outdev_extralibs="-framework AudioToolbox -framework CoreAudio"
-bktr_indev_deps_any="dev_bktr_ioctl_bt848_h machine_ioctl_bt848_h dev_video_bktr_ioctl_bt848_h dev_ic_bt8xx_h"
 caca_outdev_deps="libcaca"
 decklink_deps_any="libdl LoadLibrary"
 decklink_indev_deps="decklink threads"
@@ -3774,13 +3765,10 @@ lavfi_indev_deps="avfilter"
 libcdio_indev_deps="libcdio"
 libdc1394_indev_deps="libdc1394"
 openal_indev_deps="openal"
-opengl_outdev_deps="opengl"
-opengl_outdev_suggest="sdl2"
 oss_indev_deps_any="sys_soundcard_h"
 oss_outdev_deps_any="sys_soundcard_h"
 pulse_indev_deps="libpulse"
 pulse_outdev_deps="libpulse"
-sdl2_outdev_deps="sdl2"
 sndio_indev_deps="sndio"
 sndio_outdev_deps="sndio"
 v4l2_indev_deps_any="linux_videodev2_h sys_videoio_h"
@@ -7261,12 +7249,6 @@ check_cpp_condition vfwcap_defines vfw.h "WM_CAP_DRIVER_CONNECT > WM_USER"
 
 check_type "dshow.h" IBaseFilter
 
-# check for ioctl_meteor.h, ioctl_bt848.h and alternatives
-check_headers "dev/bktr/ioctl_meteor.h dev/bktr/ioctl_bt848.h"                   ||
-    check_headers "machine/ioctl_meteor.h machine/ioctl_bt848.h"                 ||
-    check_headers "dev/video/meteor/ioctl_meteor.h dev/video/bktr/ioctl_bt848.h" ||
-    check_headers "dev/ic/bt8xx.h"
-
 if check_struct sys/soundcard.h audio_buf_info bytes; then
     enable_sanitized sys/soundcard.h
 else
@@ -7896,10 +7878,6 @@ enabled uspp_filter         && prepend avfilter_deps "avcodec"
 enabled zoompan_filter      && prepend avfilter_deps "swscale"
 
 enabled lavfi_indev         && prepend avdevice_deps "avfilter"
-
-#FIXME
-enabled_any sdl2_outdev opengl_outdev && enabled sdl2 &&
-    add_cflags $(filter_out '-Dmain=SDL_main' $sdl2_cflags)
 
 enabled opus_decoder    && prepend avcodec_deps "swresample"
 
