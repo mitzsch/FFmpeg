@@ -80,6 +80,10 @@ typedef struct VulkanDeviceFeatures {
     VkPhysicalDeviceVulkan13Features vulkan_1_3;
     VkPhysicalDeviceTimelineSemaphoreFeatures timeline_semaphore;
 
+#ifdef VK_KHR_shader_expect_assume
+    VkPhysicalDeviceShaderExpectAssumeFeaturesKHR expect_assume;
+#endif
+
     VkPhysicalDeviceVideoMaintenance1FeaturesKHR video_maintenance_1;
 #ifdef VK_KHR_video_maintenance2
     VkPhysicalDeviceVideoMaintenance2FeaturesKHR video_maintenance_2;
@@ -114,6 +118,7 @@ typedef struct VulkanDevicePriv {
     VkPhysicalDeviceProperties2 props;
     VkPhysicalDeviceMemoryProperties mprops;
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT hprops;
+    VkPhysicalDeviceDriverProperties dprops;
 
     /* Opaque FD external semaphore properties */
     VkExternalSemaphoreProperties ext_sem_props_opaque;
@@ -185,54 +190,50 @@ typedef struct AVVkFrameInternal {
 static void device_features_init(AVHWDeviceContext *ctx, VulkanDeviceFeatures *feats)
 {
     VulkanDevicePriv *p = ctx->hwctx;
-
-#define OPT_CHAIN(STRUCT_P, EXT_FLAG, TYPE)              \
-    do {                                                 \
-        if ((EXT_FLAG == FF_VK_EXT_NO_FLAG) ||           \
-            (p->vkctx.extensions & EXT_FLAG)) {          \
-            (STRUCT_P)->sType = TYPE;                    \
-            ff_vk_link_struct(&feats->device, STRUCT_P); \
-        }                                                \
-    } while (0)
+    FFVulkanContext *s = &p->vkctx;
 
     feats->device = (VkPhysicalDeviceFeatures2) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
     };
 
-    OPT_CHAIN(&feats->vulkan_1_1, FF_VK_EXT_NO_FLAG,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES);
-    OPT_CHAIN(&feats->vulkan_1_2, FF_VK_EXT_NO_FLAG,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES);
-    OPT_CHAIN(&feats->vulkan_1_3, FF_VK_EXT_NO_FLAG,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->vulkan_1_1, FF_VK_EXT_NO_FLAG,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES);
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->vulkan_1_2, FF_VK_EXT_NO_FLAG,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES);
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->vulkan_1_3, FF_VK_EXT_NO_FLAG,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
 
-    OPT_CHAIN(&feats->timeline_semaphore, FF_VK_EXT_PORTABILITY_SUBSET,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES);
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->timeline_semaphore, FF_VK_EXT_PORTABILITY_SUBSET,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES);
 
-    OPT_CHAIN(&feats->video_maintenance_1, FF_VK_EXT_VIDEO_MAINTENANCE_1,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_1_FEATURES_KHR);
-#ifdef VK_KHR_video_maintenance2
-    OPT_CHAIN(&feats->video_maintenance_2, FF_VK_EXT_VIDEO_MAINTENANCE_2,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_2_FEATURES_KHR);
+#ifdef VK_KHR_shader_expect_assume
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->expect_assume, FF_VK_EXT_EXPECT_ASSUME,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_EXPECT_ASSUME_FEATURES_KHR);
 #endif
 
-    OPT_CHAIN(&feats->shader_object, FF_VK_EXT_SHADER_OBJECT,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT);
-    OPT_CHAIN(&feats->cooperative_matrix, FF_VK_EXT_COOP_MATRIX,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR);
-    OPT_CHAIN(&feats->descriptor_buffer, FF_VK_EXT_DESCRIPTOR_BUFFER,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT);
-    OPT_CHAIN(&feats->atomic_float, FF_VK_EXT_ATOMIC_FLOAT,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT);
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->video_maintenance_1, FF_VK_EXT_VIDEO_MAINTENANCE_1,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_1_FEATURES_KHR);
+#ifdef VK_KHR_video_maintenance2
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->video_maintenance_2, FF_VK_EXT_VIDEO_MAINTENANCE_2,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_2_FEATURES_KHR);
+#endif
+
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->shader_object, FF_VK_EXT_SHADER_OBJECT,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT);
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->cooperative_matrix, FF_VK_EXT_COOP_MATRIX,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR);
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->descriptor_buffer, FF_VK_EXT_DESCRIPTOR_BUFFER,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT);
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->atomic_float, FF_VK_EXT_ATOMIC_FLOAT,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT);
 
 #ifdef VK_KHR_shader_relaxed_extended_instruction
-    OPT_CHAIN(&feats->relaxed_extended_instruction, FF_VK_EXT_RELAXED_EXTENDED_INSTR,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_RELAXED_EXTENDED_INSTRUCTION_FEATURES_KHR);
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->relaxed_extended_instruction, FF_VK_EXT_RELAXED_EXTENDED_INSTR,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_RELAXED_EXTENDED_INSTRUCTION_FEATURES_KHR);
 #endif
 
-    OPT_CHAIN(&feats->optical_flow, FF_VK_EXT_OPTICAL_FLOW,
-              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPTICAL_FLOW_FEATURES_NV);
-#undef OPT_CHAIN
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->optical_flow, FF_VK_EXT_OPTICAL_FLOW,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPTICAL_FLOW_FEATURES_NV);
 }
 
 /* Copy all needed device features */
@@ -277,6 +278,7 @@ static void device_features_copy_needed(VulkanDeviceFeatures *dst, VulkanDeviceF
     COPY_VAL(vulkan_1_3.maintenance4);
     COPY_VAL(vulkan_1_3.synchronization2);
     COPY_VAL(vulkan_1_3.computeFullSubgroups);
+    COPY_VAL(vulkan_1_3.subgroupSizeControl);
     COPY_VAL(vulkan_1_3.shaderZeroInitializeWorkgroupMemory);
     COPY_VAL(vulkan_1_3.dynamicRendering);
 
@@ -299,6 +301,10 @@ static void device_features_copy_needed(VulkanDeviceFeatures *dst, VulkanDeviceF
 
 #ifdef VK_KHR_shader_relaxed_extended_instruction
     COPY_VAL(relaxed_extended_instruction.shaderRelaxedExtendedInstruction);
+#endif
+
+#ifdef VK_KHR_shader_expect_assume
+    COPY_VAL(expect_assume.shaderExpectAssume);
 #endif
 
     COPY_VAL(optical_flow.opticalFlow);
@@ -423,40 +429,6 @@ static const struct FFVkFormatEntry *vk_find_format_entry(enum AVPixelFormat p)
     return NULL;
 }
 
-/* Malitia pura, Khronos */
-#define FN_MAP_TO(dst_t, dst_name, src_t, src_name)                                 \
-    static av_unused dst_t map_ ##src_name## _to_ ##dst_name(src_t src) \
-    {                                                                   \
-        dst_t dst = 0x0;                                                \
-        MAP_TO(VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT,                   \
-               VK_IMAGE_USAGE_SAMPLED_BIT);                             \
-        MAP_TO(VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT,                    \
-               VK_IMAGE_USAGE_TRANSFER_SRC_BIT);                        \
-        MAP_TO(VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT,                    \
-               VK_IMAGE_USAGE_TRANSFER_DST_BIT);                        \
-        MAP_TO(VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT,                   \
-               VK_IMAGE_USAGE_STORAGE_BIT);                             \
-        MAP_TO(VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT,                \
-               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);                    \
-        MAP_TO(VK_FORMAT_FEATURE_2_VIDEO_DECODE_OUTPUT_BIT_KHR,         \
-               VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR);                \
-        MAP_TO(VK_FORMAT_FEATURE_2_VIDEO_DECODE_DPB_BIT_KHR,            \
-               VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR);                \
-        MAP_TO(VK_FORMAT_FEATURE_2_VIDEO_ENCODE_DPB_BIT_KHR,            \
-               VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR);                \
-        MAP_TO(VK_FORMAT_FEATURE_2_VIDEO_ENCODE_INPUT_BIT_KHR,          \
-               VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR);                \
-        return dst;                                                     \
-    }
-
-#define MAP_TO(flag1, flag2) if (src & flag2) dst |= flag1;
-FN_MAP_TO(VkFormatFeatureFlagBits2, feats, VkImageUsageFlags, usage)
-#undef MAP_TO
-#define MAP_TO(flag1, flag2) if (src & flag1) dst |= flag2;
-FN_MAP_TO(VkImageUsageFlags, usage, VkFormatFeatureFlagBits2, feats)
-#undef MAP_TO
-#undef FN_MAP_TO
-
 static int vkfmt_from_pixfmt2(AVHWDeviceContext *dev_ctx, enum AVPixelFormat p,
                               VkImageTiling tiling,
                               VkFormat fmts[AV_NUM_DATA_POINTERS], /* Output format list */
@@ -524,7 +496,7 @@ static int vkfmt_from_pixfmt2(AVHWDeviceContext *dev_ctx, enum AVPixelFormat p,
                 if (aspect)
                     *aspect = vk_formats_list[i].aspect;
                 if (supported_usage)
-                    *supported_usage = map_feats_to_usage(feats_primary) |
+                    *supported_usage = ff_vk_map_feats_to_usage(feats_primary) |
                                        ((need_storage && (storage_primary | storage_secondary)) ?
                                         VK_IMAGE_USAGE_STORAGE_BIT : 0);
                 return 0;
@@ -539,7 +511,7 @@ static int vkfmt_from_pixfmt2(AVHWDeviceContext *dev_ctx, enum AVPixelFormat p,
                 if (aspect)
                     *aspect = vk_formats_list[i].aspect;
                 if (supported_usage)
-                    *supported_usage = map_feats_to_usage(feats_secondary);
+                    *supported_usage = ff_vk_map_feats_to_usage(feats_secondary);
                 return 0;
             } else {
                 return AVERROR(ENOTSUP);
@@ -615,6 +587,9 @@ static const VulkanOptExtension optional_device_exts[] = {
     { VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME,               FF_VK_EXT_COOP_MATRIX            },
     { VK_NV_OPTICAL_FLOW_EXTENSION_NAME,                      FF_VK_EXT_OPTICAL_FLOW           },
     { VK_EXT_SHADER_OBJECT_EXTENSION_NAME,                    FF_VK_EXT_SHADER_OBJECT          },
+#ifdef VK_KHR_shader_expect_assume
+    { VK_KHR_SHADER_EXPECT_ASSUME_EXTENSION_NAME,             FF_VK_EXT_EXPECT_ASSUME          },
+#endif
     { VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME,              FF_VK_EXT_VIDEO_MAINTENANCE_1    },
 #ifdef VK_KHR_video_maintenance2
     { VK_KHR_VIDEO_MAINTENANCE_2_EXTENSION_NAME,              FF_VK_EXT_VIDEO_MAINTENANCE_2    },
@@ -656,7 +631,6 @@ static VkBool32 VKAPI_CALL vk_dbg_callback(VkDebugUtilsMessageSeverityFlagBitsEX
     case 0xfd92477a: /* BestPractices-vkAllocateMemory-small-allocation */
     case 0x618ab1e7: /* VUID-VkImageViewCreateInfo-usage-02275 */
     case 0x30f4ac70: /* VUID-VkImageCreateInfo-pNext-06811 */
-    case 0xa05b236e: /* UNASSIGNED-Threading-MultipleThreads-Write */
         return VK_FALSE;
     default:
         break;
@@ -772,6 +746,11 @@ static int check_extensions(AVHWDeviceContext *ctx, int dev, AVDictionary *opts,
     for (int i = 0; i < optional_exts_num; i++) {
         tstr = optional_exts[i].name;
         found = 0;
+
+        /* Intel has had a bad descriptor buffer implementation for a while */
+        if (p->dprops.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA &&
+            !strcmp(tstr, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME))
+            continue;
 
         if (dev &&
             ((debug_mode == FF_VULKAN_DEBUG_VALIDATE) ||
@@ -1199,6 +1178,7 @@ static int find_device(AVHWDeviceContext *ctx, VulkanDeviceSelection *select)
     VkPhysicalDevice *devices = NULL;
     VkPhysicalDeviceIDProperties *idp = NULL;
     VkPhysicalDeviceProperties2 *prop = NULL;
+    VkPhysicalDeviceDriverProperties *driver_prop = NULL;
     VkPhysicalDeviceDrmPropertiesEXT *drm_prop = NULL;
 
     ret = vk->EnumeratePhysicalDevices(hwctx->inst, &num, NULL);
@@ -1231,6 +1211,12 @@ static int find_device(AVHWDeviceContext *ctx, VulkanDeviceSelection *select)
         goto end;
     }
 
+    driver_prop = av_calloc(num, sizeof(*driver_prop));
+    if (!driver_prop) {
+        err = AVERROR(ENOMEM);
+        goto end;
+    }
+
     if (p->vkctx.extensions & FF_VK_EXT_DEVICE_DRM) {
         drm_prop = av_calloc(num, sizeof(*drm_prop));
         if (!drm_prop) {
@@ -1243,8 +1229,10 @@ static int find_device(AVHWDeviceContext *ctx, VulkanDeviceSelection *select)
     for (int i = 0; i < num; i++) {
         if (p->vkctx.extensions & FF_VK_EXT_DEVICE_DRM) {
             drm_prop[i].sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
-            idp[i].pNext = &drm_prop[i];
+            driver_prop[i].pNext = &drm_prop[i];
         }
+        driver_prop[i].sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+        idp[i].pNext = &driver_prop[i];
         idp[i].sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
         prop[i].sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
         prop[i].pNext = &idp[i];
@@ -1334,12 +1322,17 @@ end:
                vk_dev_type(prop[choice].properties.deviceType),
                prop[choice].properties.deviceID);
         hwctx->phys_dev = devices[choice];
+        p->props = prop[choice];
+        p->props.pNext = NULL;
+        p->dprops = driver_prop[choice];
+        p->dprops.pNext = NULL;
     }
 
     av_free(devices);
     av_free(prop);
     av_free(idp);
     av_free(drm_prop);
+    av_free(driver_prop);
 
     return err;
 }
@@ -2645,6 +2638,10 @@ static AVBufferRef *vulkan_pool_alloc(void *opaque, size_t size)
         try_export_flags(hwfc, &eiinfo.handleTypes, &e,
                          VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
 #endif
+
+    if (p->vkctx.extensions & FF_VK_EXT_EXTERNAL_DMABUF_MEMORY)
+        try_export_flags(hwfc, &eiinfo.handleTypes, &e,
+                         VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
 
     for (int i = 0; i < av_pix_fmt_count_planes(hwfc->sw_format); i++) {
         eminfo[i].sType       = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
