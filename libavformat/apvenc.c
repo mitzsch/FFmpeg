@@ -16,8 +16,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "libavcodec/apv.h"
-
 #include "avformat.h"
 #include "mux.h"
 
@@ -35,6 +33,7 @@ const FFOutputFormat ff_apv_muxer = {
     .p.audio_codec    = AV_CODEC_ID_NONE,
     .p.video_codec    = AV_CODEC_ID_APV,
     .p.subtitle_codec = AV_CODEC_ID_NONE,
-    .flags_internal   = FF_OFMT_FLAG_MAX_ONE_OF_EACH,
+    .p.flags          = AVFMT_NOTIMESTAMPS,
+    .flags_internal   = FF_OFMT_FLAG_MAX_ONE_OF_EACH | FF_OFMT_FLAG_ONLY_DEFAULT_CODECS,
     .write_packet     = apv_write_packet,
 };
