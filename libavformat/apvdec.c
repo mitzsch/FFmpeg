@@ -164,7 +164,7 @@ static int apv_read_header(AVFormatContext *s)
     err = ffio_ensure_seekback(s->pb, sizeof(buffer));
     if (err < 0)
         return err;
-    size = avio_read(s->pb, buffer, sizeof(buffer));
+    size = ffio_read_size(s->pb, buffer, sizeof(buffer));
     if (size < 0)
         return size;
 
@@ -225,7 +225,10 @@ static int apv_read_packet(AVFormatContext *s, AVPacket *pkt)
     }
 
     ret = av_get_packet(s->pb, pkt, au_size);
-    pkt->flags        = AV_PKT_FLAG_KEY;
+    if (ret < 0)
+        return ret;
+    pkt->pos  -= 4;
+    pkt->flags = AV_PKT_FLAG_KEY;
 
     signature = AV_RB32(pkt->data);
     if (signature != APV_SIGNATURE) {
@@ -233,7 +236,7 @@ static int apv_read_packet(AVFormatContext *s, AVPacket *pkt)
         return AVERROR_INVALIDDATA;
     }
 
-    return ret;
+    return 0;
 }
 
 const FFInputFormat ff_apv_demuxer = {
@@ -241,7 +244,6 @@ const FFInputFormat ff_apv_demuxer = {
     .p.long_name    = NULL_IF_CONFIG_SMALL("APV raw bitstream"),
     .p.extensions   = "apv",
     .p.flags        = AVFMT_GENERIC_INDEX | AVFMT_NOTIMESTAMPS,
-    .flags_internal = FF_INFMT_FLAG_INIT_CLEANUP,
     .read_probe     = apv_probe,
     .read_header    = apv_read_header,
     .read_packet    = apv_read_packet,
