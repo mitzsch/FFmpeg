@@ -174,6 +174,12 @@ av_cold int ff_h263_decode_init(AVCodecContext *avctx)
     return 0;
 }
 
+static void report_decode_progress(MpegEncContext *s)
+{
+    if (s->pict_type != AV_PICTURE_TYPE_B && !s->partitioned_frame && !s->er.error_occurred)
+        ff_thread_progress_report(&s->cur_pic.ptr->progress, s->mb_y);
+}
+
 static int decode_slice(MpegEncContext *s)
 {
     const int part_mask = s->partitioned_frame
@@ -278,8 +284,8 @@ static int decode_slice(MpegEncContext *s)
 
                     if (++s->mb_x >= s->mb_width) {
                         s->mb_x = 0;
+                        report_decode_progress(s);
                         ff_mpeg_draw_horiz_band(s, s->mb_y * mb_size, mb_size);
-                        ff_mpv_report_decode_progress(s);
                         s->mb_y++;
                     }
                     return 0;
@@ -305,8 +311,8 @@ static int decode_slice(MpegEncContext *s)
                 ff_h263_loop_filter(s);
         }
 
+        report_decode_progress(s);
         ff_mpeg_draw_horiz_band(s, s->mb_y * mb_size, mb_size);
-        ff_mpv_report_decode_progress(s);
 
         s->mb_x = 0;
     }
@@ -426,22 +432,19 @@ int ff_h263_decode_frame(AVCodecContext *avctx, AVFrame *pict,
     /* no supplementary picture */
     if (buf_size == 0) {
         /* special case for last picture */
-        if (s->low_delay == 0 && s->next_pic.ptr) {
+        if ((!s->low_delay || s->skipped_last_frame) && s->next_pic.ptr) {
             if ((ret = av_frame_ref(pict, s->next_pic.ptr->f)) < 0)
                 return ret;
-            ff_mpv_unref_picture(&s->next_pic);
+            if (s->skipped_last_frame) {
+                /* If the stream ended with an NVOP, we output the last frame
+                 * in display order, but with the props from the last input
+                 * packet so that the stream's end time is correct. */
+                ret = ff_decode_frame_props(avctx, pict);
+                if (ret < 0)
+                    return ret;
+            }
 
-            *got_frame = 1;
-        } else if (s->skipped_last_frame && s->cur_pic.ptr) {
-            /* Output the last picture we decoded again if the stream ended with
-             * an NVOP */
-            if ((ret = av_frame_ref(pict, s->cur_pic.ptr->f)) < 0)
-                return ret;
-            /* Copy props from the last input packet. Otherwise, props from the last
-             * returned picture would be reused */
-            if ((ret = ff_decode_frame_props(avctx, pict)) < 0)
-                return ret;
-            ff_mpv_unref_picture(&s->cur_pic);
+            ff_mpv_unref_picture(&s->next_pic);
 
             *got_frame = 1;
         }
@@ -449,7 +452,6 @@ int ff_h263_decode_frame(AVCodecContext *avctx, AVFrame *pict,
         return 0;
     }
 
-retry:
     // s->gb might be overridden in ff_mpeg4_decode_picture_header() below.
     ret = init_get_bits8(&s->gb, buf, buf_size);
     if (ret < 0)
@@ -467,7 +469,6 @@ retry:
 #endif
     } else if (CONFIG_MPEG4_DECODER && avctx->codec_id == AV_CODEC_ID_MPEG4) {
         ret = ff_mpeg4_decode_picture_header(s);
-        s->skipped_last_frame = (ret == FRAME_SKIPPED);
     } else if (CONFIG_H263I_DECODER && s->codec_id == AV_CODEC_ID_H263I) {
         ret = ff_intel_h263_decode_picture_header(s);
     } else if (CONFIG_FLV_DECODER && s->h263_flv) {
@@ -505,8 +506,7 @@ retry:
     if (CONFIG_MPEG4_DECODER && avctx->codec_id == AV_CODEC_ID_MPEG4) {
         if (s->pict_type != AV_PICTURE_TYPE_B && s->mb_num/2 > get_bits_left(&s->gb))
             return AVERROR_INVALIDDATA;
-        if (ff_mpeg4_workaround_bugs(avctx) == 1)
-            goto retry;
+        ff_mpeg4_workaround_bugs(avctx);
         if (s->studio_profile != (s->idsp.idct == NULL))
             ff_mpv_idct_init(s);
     }
