@@ -42,6 +42,7 @@ OBJS = ac3_parser.o                                                     \
        dv_profile.o                                                     \
        encode.o                                                         \
        get_buffer.o                                                     \
+       hashtable.o                                                      \
        imgconvert.o                                                     \
        jni.o                                                            \
        lcevcdec.o                                                       \
@@ -811,6 +812,7 @@ OBJS-$(CONFIG_VP9_V4L2M2M_DECODER)     += v4l2_m2m_dec.o
 OBJS-$(CONFIG_VQA_DECODER)             += vqavideo.o
 OBJS-$(CONFIG_VQC_DECODER)             += vqcdec.o
 OBJS-$(CONFIG_VVC_DECODER)             += executor.o h2645data.o
+OBJS-$(CONFIG_VVC_SEI)                 += h2645_sei.o aom_film_grain.o h274.o
 OBJS-$(CONFIG_WADY_DPCM_DECODER)       += dpcm.o
 OBJS-$(CONFIG_WAVARC_DECODER)          += wavarc.o
 OBJS-$(CONFIG_WAVPACK_DECODER)         += wavpack.o wavpackdata.o dsd.o
@@ -1325,6 +1327,7 @@ TESTPROGS = avcodec                                                     \
             bitstream_le                                                \
             celp_math                                                   \
             codec_desc                                                  \
+            hashtable                                                   \
             htmlsubtitles                                               \
             jpeg2000dwt                                                 \
             mathops                                                    \
