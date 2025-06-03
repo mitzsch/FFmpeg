@@ -49,7 +49,6 @@ OBJS-ffprobe +=                       \
     fftools/textformat/tw_avio.o      \
     fftools/textformat/tw_buffer.o    \
     fftools/textformat/tw_stdout.o    \
-    $(OBJS-resman)                    \
 
 OBJS-ffplay += fftools/ffplay_renderer.o
 
@@ -93,4 +92,4 @@ uninstall-progs:
 	$(RM) $(addprefix "$(BINDIR)/", $(ALLAVPROGS))
 
 clean::
-	$(RM) $(ALLAVPROGS) $(ALLAVPROGS_G) $(CLEANSUFFIXES:%=fftools/%)
+	$(RM) $(ALLAVPROGS) $(ALLAVPROGS_G) $(CLEANSUFFIXES:%=fftools/%) $(CLEANSUFFIXES:%=fftools/graph/%) $(CLEANSUFFIXES:%=fftools/textformat/%)
