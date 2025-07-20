@@ -260,8 +260,14 @@ static const struct {
     #endif
 #endif
 #if CONFIG_AVFILTER
+    #if CONFIG_SCENE_SAD
+        { "scene_sad", checkasm_check_scene_sad },
+    #endif
     #if CONFIG_AFIR_FILTER
         { "af_afir", checkasm_check_afir },
+    #endif
+    #if CONFIG_BLACKDETECT_FILTER
+        { "vf_blackdetect", checkasm_check_blackdetect },
     #endif
     #if CONFIG_BLEND_FILTER
         { "vf_blend", checkasm_check_blend },
