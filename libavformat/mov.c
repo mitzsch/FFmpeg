@@ -2989,6 +2989,7 @@ static int mov_finalize_stsd_codec(MOVContext *c, AVIOContext *pb,
     case AV_CODEC_ID_VP9:
         sti->need_parsing = AVSTREAM_PARSE_FULL;
         break;
+    case AV_CODEC_ID_PRORES_RAW:
     case AV_CODEC_ID_APV:
     case AV_CODEC_ID_EVC:
     case AV_CODEC_ID_AV1:
@@ -8956,6 +8957,7 @@ static int mov_read_infe(MOVContext *c, AVIOContext *pb, MOVAtom atom)
         return AVERROR(ENOMEM);
     }
 
+    av_freep(&item->name);
     av_bprint_finalize(&item_name, ret ? &item->name : NULL);
     item->item_id = item_id;
     item->type    = item_type;
