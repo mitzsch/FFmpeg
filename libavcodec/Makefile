@@ -432,6 +432,8 @@ OBJS-$(CONFIG_H264_DECODER)            += h264dec.o h264_cabac.o h264_cavlc.o \
 OBJS-$(CONFIG_H264_AMF_ENCODER)        += amfenc_h264.o
 OBJS-$(CONFIG_H264_AMF_DECODER)        += amfdec.o
 OBJS-$(CONFIG_H264_CUVID_DECODER)      += cuviddec.o
+OBJS-$(CONFIG_H264_D3D12VA_ENCODER)    += d3d12va_encode_h264.o h264_levels.o \
+                                          h2645data.o hw_base_encode_h264.o
 OBJS-$(CONFIG_H264_MEDIACODEC_DECODER) += mediacodecdec.o
 OBJS-$(CONFIG_H264_MEDIACODEC_ENCODER) += mediacodecenc.o
 OBJS-$(CONFIG_H264_MF_ENCODER)         += mfenc.o mf_utils.o
@@ -1104,6 +1106,7 @@ OBJS-$(CONFIG_VP9_VULKAN_HWACCEL)         += vulkan_decode.o vulkan_vp9.o
 OBJS-$(CONFIG_VP8_QSV_HWACCEL)            += qsvdec.o
 OBJS-$(CONFIG_VVC_VAAPI_HWACCEL)          += vaapi_vvc.o
 OBJS-$(CONFIG_PRORES_RAW_VULKAN_HWACCEL)  += vulkan_decode.o vulkan_prores_raw.o
+OBJS-$(CONFIG_PRORES_VULKAN_HWACCEL)      += vulkan_decode.o vulkan_prores.o
 
 # Objects duplicated from other libraries for shared builds
 SHLIBOBJS                              += log2_tab.o reverse.o
@@ -1279,6 +1282,7 @@ OBJS-$(CONFIG_PNG_PARSER)              += png_parser.o
 OBJS-$(CONFIG_PNM_PARSER)              += pnm_parser.o pnm.o
 OBJS-$(CONFIG_PRORES_RAW_PARSER)       += prores_raw_parser.o
 OBJS-$(CONFIG_QOI_PARSER)              += qoi_parser.o
+OBJS-$(CONFIG_PRORES_PARSER)           += prores_parser.o
 OBJS-$(CONFIG_RV34_PARSER)             += rv34_parser.o
 OBJS-$(CONFIG_SBC_PARSER)              += sbc_parser.o
 OBJS-$(CONFIG_SIPR_PARSER)             += sipr_parser.o
@@ -1348,7 +1352,7 @@ SKIPHEADERS-$(CONFIG_QSVENC)           += qsvenc.h
 SKIPHEADERS-$(CONFIG_VAAPI)            += vaapi_decode.h vaapi_hevc.h vaapi_encode.h
 SKIPHEADERS-$(CONFIG_VDPAU)            += vdpau.h vdpau_internal.h
 SKIPHEADERS-$(CONFIG_VIDEOTOOLBOX)     += videotoolbox.h vt_internal.h
-SKIPHEADERS-$(CONFIG_VULKAN)           += ffv1_vulkan.h vulkan_video.h \
+SKIPHEADERS-$(CONFIG_VULKAN)           += ffv1_vulkan.h prores_vulkan.h vulkan_video.h \
                                           vulkan_encode.h vulkan_decode.h
 SKIPHEADERS-$(CONFIG_V4L2_M2M)         += v4l2_buffers.h v4l2_context.h v4l2_m2m.h
 SKIPHEADERS-$(CONFIG_ZLIB)             += zlib_wrapper.h

@@ -2991,6 +2991,7 @@ static int mov_finalize_stsd_codec(MOVContext *c, AVIOContext *pb,
         sti->need_parsing = AVSTREAM_PARSE_FULL;
         break;
     case AV_CODEC_ID_PRORES_RAW:
+    case AV_CODEC_ID_PRORES:
     case AV_CODEC_ID_APV:
     case AV_CODEC_ID_EVC:
     case AV_CODEC_ID_AV1:
@@ -5243,16 +5244,22 @@ static int mov_read_trak(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 #endif
     }
 
+#if CONFIG_H261_DECODER || CONFIG_H263_DECODER || CONFIG_MPEG4_DECODER
     switch (st->codecpar->codec_id) {
+#if CONFIG_H261_DECODER
     case AV_CODEC_ID_H261:
+#endif
+#if CONFIG_H263_DECODER
     case AV_CODEC_ID_H263:
+#endif
+#if CONFIG_MPEG4_DECODER
     case AV_CODEC_ID_MPEG4:
+#endif
         st->codecpar->width = 0; /* let decoder init width/height */
         st->codecpar->height= 0;
         break;
-    default:
-        break;
     }
+#endif
 
     // If the duration of the mp3 packets is not constant, then they could need a parser
     if (st->codecpar->codec_id == AV_CODEC_ID_MP3
@@ -5839,7 +5846,7 @@ static int mov_read_trun(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             } else if (has_sidx && !c->use_tfdt || fallback_sidx) {
                 // FIXME: sidx earliest_presentation_time is *PTS*, s.b.
                 // pts = frag_stream_info->sidx_pts;
-                dts = frag_stream_info->sidx_pts - sc->time_offset;
+                dts = frag_stream_info->sidx_pts;
                 av_log(c->fc, AV_LOG_DEBUG, "found sidx time %"PRId64
                         ", using it for dts\n", frag_stream_info->sidx_pts);
             } else {
