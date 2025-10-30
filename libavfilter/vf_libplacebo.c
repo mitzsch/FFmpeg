@@ -1650,7 +1650,7 @@ static const AVOption libplacebo_options[] = {
     {"pc",                           NULL,   0, AV_OPT_TYPE_CONST, {.i64=AVCOL_RANGE_JPEG},         0, 0, STATIC, .unit = "range"},
     {"jpeg",                         NULL,   0, AV_OPT_TYPE_CONST, {.i64=AVCOL_RANGE_JPEG},         0, 0, STATIC, .unit = "range"},
 
-    {"color_primaries", "select color primaries", OFFSET(color_primaries), AV_OPT_TYPE_INT, {.i64=-1}, -1, AVCOL_PRI_NB-1, DYNAMIC, .unit = "color_primaries"},
+    {"color_primaries", "select color primaries", OFFSET(color_primaries), AV_OPT_TYPE_INT, {.i64=-1}, -1, AVCOL_PRI_EXT_NB-1, DYNAMIC, .unit = "color_primaries"},
     {"auto", "keep the same color primaries",  0, AV_OPT_TYPE_CONST, {.i64=-1},                     INT_MIN, INT_MAX, STATIC, .unit = "color_primaries"},
     {"bt709",                           NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_PRI_BT709},        INT_MIN, INT_MAX, STATIC, .unit = "color_primaries"},
     {"unknown",                         NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_PRI_UNSPECIFIED},  INT_MIN, INT_MAX, STATIC, .unit = "color_primaries"},
@@ -1665,8 +1665,9 @@ static const AVOption libplacebo_options[] = {
     {"smpte432",                        NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_PRI_SMPTE432},     INT_MIN, INT_MAX, STATIC, .unit = "color_primaries"},
     {"jedec-p22",                       NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_PRI_JEDEC_P22},    INT_MIN, INT_MAX, STATIC, .unit = "color_primaries"},
     {"ebu3213",                         NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_PRI_EBU3213},      INT_MIN, INT_MAX, STATIC, .unit = "color_primaries"},
+    {"vgamut",                          NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_PRI_V_GAMUT},      INT_MIN, INT_MAX, STATIC, .unit = "color_primaries"},
 
-    {"color_trc", "select color transfer", OFFSET(color_trc), AV_OPT_TYPE_INT, {.i64=-1}, -1, AVCOL_TRC_NB-1, DYNAMIC, .unit = "color_trc"},
+    {"color_trc", "select color transfer", OFFSET(color_trc), AV_OPT_TYPE_INT, {.i64=-1}, -1, AVCOL_TRC_EXT_NB-1, DYNAMIC, .unit = "color_trc"},
     {"auto", "keep the same color transfer",  0, AV_OPT_TYPE_CONST, {.i64=-1},                     INT_MIN, INT_MAX, STATIC, .unit = "color_trc"},
     {"bt709",                          NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_TRC_BT709},        INT_MIN, INT_MAX, STATIC, .unit = "color_trc"},
     {"unknown",                        NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_TRC_UNSPECIFIED},  INT_MIN, INT_MAX, STATIC, .unit = "color_trc"},
@@ -1682,6 +1683,7 @@ static const AVOption libplacebo_options[] = {
     {"bt2020-12",                      NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_TRC_BT2020_12},    INT_MIN, INT_MAX, STATIC, .unit = "color_trc"},
     {"smpte2084",                      NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_TRC_SMPTE2084},    INT_MIN, INT_MAX, STATIC, .unit = "color_trc"},
     {"arib-std-b67",                   NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_TRC_ARIB_STD_B67}, INT_MIN, INT_MAX, STATIC, .unit = "color_trc"},
+    {"vlog",                           NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_TRC_V_LOG},        INT_MIN, INT_MAX, STATIC, .unit = "color_trc"},
 
     {"rotate", "rotate the input clockwise", OFFSET(rotation), AV_OPT_TYPE_INT, {.i64=PL_ROTATION_0}, PL_ROTATION_0, PL_ROTATION_360, DYNAMIC, .unit = "rotation"},
     {"0",                              NULL,  0, AV_OPT_TYPE_CONST, {.i64=PL_ROTATION_0},   .flags = STATIC, .unit = "rotation"},
