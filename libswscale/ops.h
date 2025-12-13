@@ -39,7 +39,6 @@ typedef enum SwsPixelType {
 const char *ff_sws_pixel_type_name(SwsPixelType type);
 int ff_sws_pixel_type_size(SwsPixelType type) av_const;
 bool ff_sws_pixel_type_is_int(SwsPixelType type) av_const;
-SwsPixelType ff_sws_pixel_type_to_uint(SwsPixelType type) av_const;
 
 typedef enum SwsOpType {
     SWS_OP_INVALID = 0,
@@ -210,8 +209,8 @@ typedef struct SwsOpList {
     SwsOp *ops;
     int num_ops;
 
-    /* Purely informative metadata associated with this operation list */
-    SwsFormat src, dst;
+    /* Metadata associated with this operation list */
+    SwsFormat src, dst; /* if set; may inform the optimizer about e.g value ranges */
 } SwsOpList;
 
 SwsOpList *ff_sws_op_list_alloc(void);
