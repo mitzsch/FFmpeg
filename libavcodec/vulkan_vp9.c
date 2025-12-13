@@ -115,6 +115,7 @@ static int vk_vp9_start_frame(AVCodecContext          *avctx,
     uint32_t frame_id_alloc_mask = 0;
 
     const VP9Frame *pic = &s->frames[CUR_FRAME];
+    const AVPixFmtDescriptor *pixdesc = av_pix_fmt_desc_get(avctx->sw_pix_fmt);
     FFVulkanDecodeContext *dec = avctx->internal->hwaccel_priv_data;
     uint8_t profile = (pic->frame_header->profile_high_bit << 1) | pic->frame_header->profile_low_bit;
 
@@ -222,8 +223,9 @@ static int vk_vp9_start_frame(AVCodecContext          *avctx,
         },
         .BitDepth = profile < 2 ? 8 :
                     pic->frame_header->ten_or_twelve_bit ? 12 : 10,
-        .subsampling_x = pic->frame_header->subsampling_x,
-        .subsampling_y = pic->frame_header->subsampling_y,
+        .subsampling_x = pixdesc->log2_chroma_w,
+        .subsampling_y = pixdesc->log2_chroma_h,
+
         .color_space = pic->frame_header->color_space,
     };
 
@@ -235,7 +237,7 @@ static int vk_vp9_start_frame(AVCodecContext          *avctx,
            .refresh_frame_context = pic->frame_header->refresh_frame_context,
            .frame_parallel_decoding_mode = pic->frame_header->frame_parallel_decoding_mode,
            .segmentation_enabled = pic->frame_header->segmentation_enabled,
-           .show_frame = pic->frame_header->segmentation_enabled,
+           .show_frame = !s->h.invisible,
            .UsePrevFrameMvs = s->h.use_last_frame_mvs,
         },
         .profile = profile,
@@ -336,7 +338,7 @@ static int vk_vp9_end_frame(AVCodecContext *avctx)
         rav[i] = ap->ref_src[i]->tf.f;
     }
 
-    av_log(avctx, AV_LOG_VERBOSE, "Decoding frame, %"SIZE_SPECIFIER" bytes\n",
+    av_log(avctx, AV_LOG_VERBOSE, "Decoding frame, %zu bytes\n",
            vp->slices_size);
 
     return ff_vk_decode_frame(avctx, pic->tf.f, vp, rav, rvp);
