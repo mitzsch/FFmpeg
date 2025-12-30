@@ -210,7 +210,7 @@ int ff_mjpeg_decode_dqt(MJpegDecodeContext *s)
         }
         index = get_bits(&s->gb, 4);
         if (index >= 4)
-            return -1;
+            return AVERROR_INVALIDDATA;
         av_log(s->avctx, AV_LOG_DEBUG, "index=%d\n", index);
         /* read quant table */
         for (i = 0; i < 64; i++) {
@@ -326,7 +326,7 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
 
     if(s->lossless && s->avctx->lowres){
         av_log(s->avctx, AV_LOG_ERROR, "lowres is not possible with lossless jpeg\n");
-        return -1;
+        return AVERROR(ENOSYS);
     }
 
     height = get_bits(&s->gb, 16);
@@ -340,14 +340,16 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
     if (av_image_check_size(width, height, 0, s->avctx) < 0)
         return AVERROR_INVALIDDATA;
 
-    // A valid frame requires at least 1 bit for DC + 1 bit for AC for each 8x8 block.
-    if (s->buf_size && (width + 7) / 8 * ((height + 7) / 8) > s->buf_size * 4LL)
-        return AVERROR_INVALIDDATA;
+    if (!s->progressive && !s->ls) {
+        // A valid frame requires at least 1 bit for DC + 1 bit for AC for each 8x8 block.
+        if (s->buf_size && (width + 7) / 8 * ((height + 7) / 8) > s->buf_size * 4LL)
+            return AVERROR_INVALIDDATA;
+    }
 
     nb_components = get_bits(&s->gb, 8);
     if (nb_components <= 0 ||
         nb_components > MAX_COMPONENTS)
-        return -1;
+        return AVERROR_INVALIDDATA;
     if (s->interlaced && (s->bottom_field == !s->interlace_polarity)) {
         if (nb_components != s->nb_components) {
             av_log(s->avctx, AV_LOG_ERROR,
@@ -755,8 +757,9 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
         }
 
         av_frame_unref(s->picture_ptr);
-        if (ff_get_buffer(s->avctx, s->picture_ptr, AV_GET_BUFFER_FLAG_REF) < 0)
-            return -1;
+        ret = ff_get_buffer(s->avctx, s->picture_ptr, AV_GET_BUFFER_FLAG_REF);
+        if (ret < 0)
+            return ret;
         s->picture_ptr->pict_type = AV_PICTURE_TYPE_I;
         s->picture_ptr->flags |= AV_FRAME_FLAG_KEY;
         s->got_picture            = 1;
@@ -1675,7 +1678,7 @@ int ff_mjpeg_decode_sos(MJpegDecodeContext *s, const uint8_t *mb_bitmask,
     if (!s->got_picture) {
         av_log(s->avctx, AV_LOG_WARNING,
                 "Can not process SOS before SOF, skipping\n");
-        return -1;
+        return AVERROR_INVALIDDATA;
     }
 
     /* XXX: verify len field validity */
@@ -2191,17 +2194,19 @@ static int mjpeg_decode_com(MJpegDecodeContext *s)
 static int find_marker(const uint8_t **pbuf_ptr, const uint8_t *buf_end)
 {
     const uint8_t *buf_ptr;
-    unsigned int v, v2;
     int val;
     int skipped = 0;
 
     buf_ptr = *pbuf_ptr;
-    while (buf_end - buf_ptr > 1) {
-        v  = *buf_ptr++;
-        v2 = *buf_ptr;
-        if ((v == 0xff) && (v2 >= SOF0) && (v2 <= COM) && buf_ptr < buf_end) {
+    while ((buf_ptr = memchr(buf_ptr, 0xff, buf_end - buf_ptr))) {
+        buf_ptr++;
+        while (buf_ptr < buf_end) {
             val = *buf_ptr++;
-            goto found;
+            if (val != 0xff) {
+                if ((val >= SOF0) && (val <= COM))
+                    goto found;
+                break;
+            }
         }
         skipped++;
     }
