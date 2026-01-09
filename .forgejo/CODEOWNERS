@@ -21,7 +21,7 @@ libavcodec/.*atrac9.* @lynne
 libavcodec/bink.* @pross
 libavcodec/bintext.* @pross
 libavcodec/.*bitpacked.* @lynne
-libavcodec/.*d3d12va.* @jianhuaw @tong1wu
+libavcodec/.*d3d12va.* @jianhuaw @tong1wu @younengxiao
 libavcodec/.*dirac.* @lynne
 libavcodec/.*dovi_rpu.* @haasn
 libavcodec/dpx.* @pross
@@ -40,11 +40,13 @@ libavcodec/h26x/.* @frankplow @NuoMi @jianhuaw
 libavcodec/.*h274.* @haasn
 libavcodec/iff.* @pross
 libavcodec/.*jpegxl.* @lynne @Traneptora
+libavcodec/jpeg2000htdec.* @cae
 libavcodec/jv.* @pross
 libavcodec/.*jxl.* @lynne @Traneptora
 libavcodec/.*lcms2.* @haasn
 libavcodec/lead.* @pross
 libavcodec/mediacodec* @quink
+libavcodec/mjpeg* @michaelni
 libavcodec/mmvideo.* @pross
 libavcodec/msp2.* @pross
 libavcodec/mvc.* @pross
@@ -160,7 +162,7 @@ libavformat/wtv.* @pross
 # ======
 libavutil/.*_amf* @OvchinnikovDmitrii @ArazIusubov
 libavutil/.*crc.* @lynne @michaelni
-libavutil/.*d3d12va.* @jianhuaw @tong1wu
+libavutil/.*d3d12va.* @jianhuaw @tong1wu @younengxiao
 libavutil/csp.* @rbultje @haasn
 libavutil/eval.* @michaelni
 libavutil/film_grain.* @haasn
@@ -214,7 +216,7 @@ doc/.* @GyanD
 
 # Frameworks
 # ==========
-.*d3d12va.* @jianhuaw @tong1wu
+.*d3d12va.* @jianhuaw @tong1wu @younengxiao
 .*vulkan.* @lynne @haasn
 
 # tests
