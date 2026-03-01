@@ -2612,6 +2612,7 @@ TYPES_LIST="
     kCVPixelFormatType_444YpCbCr8BiPlanarVideoRange
     kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange
     kCVPixelFormatType_444YpCbCr16BiPlanarVideoRange
+    kCVPixelFormatType_422YpCbCr8_yuvs
     kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
     kCVImageBufferTransferFunction_ITU_R_2100_HLG
     kCVImageBufferTransferFunction_Linear
@@ -2693,6 +2694,7 @@ CONFIG_EXTRA="
     cbs_h265
     cbs_h266
     cbs_jpeg
+    cbs_lcevc
     cbs_mpeg2
     cbs_vp8
     cbs_vp9
@@ -3005,6 +3007,7 @@ cbs_h264_select="cbs"
 cbs_h265_select="cbs"
 cbs_h266_select="cbs"
 cbs_jpeg_select="cbs"
+cbs_lcevc_select="cbs"
 cbs_mpeg2_select="cbs"
 cbs_vp8_select="cbs"
 cbs_vp9_select="cbs"
@@ -3118,7 +3121,7 @@ exr_decoder_select="bswapdsp"
 exr_encoder_deps="zlib"
 ffv1_decoder_select="rangecoder"
 ffv1_encoder_select="rangecoder"
-ffv1_vulkan_encoder_select="vulkan spirv_library"
+ffv1_vulkan_encoder_select="vulkan spirv_compiler"
 ffvhuff_decoder_select="huffyuv_decoder"
 ffvhuff_encoder_select="huffyuv_encoder"
 fic_decoder_select="golomb"
@@ -3353,7 +3356,7 @@ av1_vulkan_hwaccel_deps="vulkan"
 av1_vulkan_hwaccel_select="av1_decoder"
 dpx_vulkan_hwaccel_deps="vulkan spirv_compiler"
 dpx_vulkan_hwaccel_select="dpx_decoder"
-ffv1_vulkan_hwaccel_deps="vulkan spirv_library"
+ffv1_vulkan_hwaccel_deps="vulkan spirv_compiler"
 ffv1_vulkan_hwaccel_select="ffv1_decoder"
 h263_vaapi_hwaccel_deps="vaapi"
 h263_vaapi_hwaccel_select="h263_decoder"
@@ -3691,6 +3694,7 @@ h264_metadata_bsf_deps="const_nan"
 h264_metadata_bsf_select="cbs_h264"
 h264_redundant_pps_bsf_select="cbs_h264"
 hevc_metadata_bsf_select="cbs_h265"
+lcevc_metadata_bsf_select="cbs_lcevc"
 mjpeg2jpeg_bsf_select="jpegtables"
 mpeg2_metadata_bsf_select="cbs_mpeg2"
 smpte436m_to_eia608_bsf_select="smpte_436m"
@@ -4036,8 +4040,8 @@ srtp_protocol_select="rtp_protocol srtp"
 tcp_protocol_select="network"
 tls_protocol_deps_any="gnutls openssl schannel securetransport libtls mbedtls"
 tls_protocol_select="tcp_protocol"
-# TODO: Support libtls, mbedtls.
-dtls_protocol_deps_any="openssl schannel gnutls"
+# TODO: Support libtls.
+dtls_protocol_deps_any="openssl schannel gnutls mbedtls"
 dtls_protocol_select="udp_protocol"
 udp_protocol_select="network"
 udplite_protocol_select="network"
@@ -4277,7 +4281,7 @@ cws2fws_extralibs="zlib_extralibs"
 
 # libraries, in any order
 avcodec_deps="avutil"
-avcodec_suggest="libm stdatomic zlib spirv_library"
+avcodec_suggest="libm stdatomic zlib"
 avdevice_deps="avformat avcodec avutil"
 avdevice_suggest="libm stdatomic"
 avfilter_deps="avutil"
@@ -4288,7 +4292,7 @@ avutil_suggest="clock_gettime ffnvcodec gcrypt libm zlib libdrm libmfx opencl op
 swresample_deps="avutil"
 swresample_suggest="libm libsoxr stdatomic"
 swscale_deps="avutil"
-swscale_suggest="libm stdatomic"
+swscale_suggest="libm stdatomic spirv_library"
 shader_compression_suggest="zlib"
 
 avcodec_extralibs="pthreads_extralibs iconv_extralibs dxva2_extralibs liblcevc_dec_extralibs lcms2_extralibs"
@@ -7314,8 +7318,10 @@ enabled libnpp            && { test_cpp_condition "$(cd "$source_path"; pwd)/lib
                                die "ERROR: libnpp not found"; } &&
                              { check_func_headers "nppi.h" nppiYCbCr420_8u_P2P3R $libnpp_extralibs ||
                                die "ERROR: libnpp support is deprecated, version 13.0 and up are not supported"; }
-enabled libopencore_amrnb && require libopencore_amrnb opencore-amrnb/interf_dec.h Decoder_Interface_init -lopencore-amrnb
-enabled libopencore_amrwb && require libopencore_amrwb opencore-amrwb/dec_if.h D_IF_init -lopencore-amrwb
+enabled libopencore_amrnb && { check_pkg_config libopencore_amrnb opencore-amrnb opencore-amrnb/interf_dec.h Decoder_Interface_init ||
+                               require libopencore_amrnb opencore-amrnb/interf_dec.h Decoder_Interface_init -lopencore-amrnb; }
+enabled libopencore_amrwb && { check_pkg_config libopencore_amrwb opencore-amrwb opencore-amrwb/dec_if.h D_IF_init ||
+                               require libopencore_amrwb opencore-amrwb/dec_if.h D_IF_init -lopencore-amrwb; }
 enabled libopencv         && { check_pkg_config libopencv opencv4 opencv2/core/core_c.h cvCreateImageHeader ||
                                require libopencv opencv2/core/core_c.h cvCreateImageHeader -lopencv_core -lopencv_imgproc; }
 enabled libopencolorio    && require_pkg_config_cxx libopencolorio "OpenColorIO" OpenColorIO/OpenColorIO.h OCIO_NAMESPACE::Config
@@ -7369,7 +7375,8 @@ enabled libv4l2           && require_pkg_config libv4l2 libv4l2 libv4l2.h v4l2_i
 enabled libvidstab        && require_pkg_config libvidstab "vidstab >= 0.98" vid.stab/libvidstab.h vsMotionDetectInit
 enabled libvmaf           && require_pkg_config libvmaf "libvmaf >= 2.0.0" libvmaf.h vmaf_init
 enabled libvmaf           && check_pkg_config libvmaf_cuda "libvmaf >= 2.0.0" libvmaf_cuda.h vmaf_cuda_state_init
-enabled libvo_amrwbenc    && require libvo_amrwbenc vo-amrwbenc/enc_if.h E_IF_init -lvo-amrwbenc
+enabled libvo_amrwbenc    && { check_pkg_config libvo_amrwbenc vo-amrwbenc vo-amrwbenc/enc_if.h E_IF_init ||
+                               require libvo_amrwbenc vo-amrwbenc/enc_if.h E_IF_init -lvo-amrwbenc; }
 enabled libvorbis         && require_pkg_config libvorbis vorbis vorbis/codec.h vorbis_info_init &&
                              require_pkg_config libvorbisenc vorbisenc vorbis/vorbisenc.h vorbis_encode_init
 
@@ -7726,7 +7733,7 @@ probe_glslc(){
     if test_cmd $glslc_probe -v; then
         # glslang/glslangValidator
         glslc=$glslc_probe
-        glslcflags="-V --target-env spirv1.6"
+        glslcflags="-V --target-env spirv1.6 --glsl-version 460"
         glslc_opt_speed=""
         glslc_opt_size="-Os"
         glslc_opt_none="-Od"
@@ -7735,7 +7742,7 @@ probe_glslc(){
     elif test_cmd $glslc_probe --version; then
         # glslc
         glslc=$glslc_probe
-        glslcflags="--target-env=vulkan1.4 --target-spv=spv1.6"
+        glslcflags="--target-env=vulkan1.4 --target-spv=spv1.6 -std=460"
         glslc_opt_speed="-O"
         glslc_opt_size="-Os"
         glslc_opt_none="-O0"
@@ -7821,35 +7828,49 @@ fi
 
 enabled debug && add_allcflags -g"$debuglevel" && add_asflags -g"$debuglevel"
 
-# add some useful compiler flags if supported
-check_allcflags -Wall
-check_allcflags -Wdisabled-optimization
-check_allcflags -Wpointer-arith
-check_allcflags -Wredundant-decls
-check_allcflags -Wwrite-strings
-check_allcflags -Wtype-limits
-check_allcflags -Wundef
-check_allcflags -Wempty-body
-check_cflags -Wmissing-prototypes
-check_cflags -Wstrict-prototypes
+for lang in c cxx objc; do
+    test_${lang}flags -Werror=unused-command-line-argument &&
+        append unknown_warning_${lang}flags "-Werror=unused-command-line-argument"
+    test_${lang}flags -Werror=unknown-warning-option &&
+        append unknown_warning_${lang}flags "-Werror=unknown-warning-option"
+done
 
-if enabled extra_warnings; then
-    check_allcflags -Wcast-qual
-    check_allcflags -Wextra
-    check_allcflags -Wpedantic
-fi
+check_warning(){
+    warning_flag=$1
+    flag_to_add=${2:-$1}
+    test_cflags $unknown_warning_cflags $warning_flag && add_cflags $flag_to_add
+    test_cxxflags -Werror $unknown_warning_cxxflags $warning_flag && add_cxxflags $flag_to_add
+    test_objcflags $unknown_warning_objcflags $warning_flag && add_objcflags $flag_to_add
+}
 
 check_disable_warning(){
     warning_flag=-W${1#-Wno-}
-    test_cflags $unknown_warning_flags $warning_flag && add_cflags $1
-    test_cxxflags -Werror $unknown_warning_flags $warning_flag && add_cxxflags $1
-    test_objcflags $unknown_warning_flags $warning_flag && add_objcflags $1
+    check_warning $warning_flag $1
 }
 
-test_cflags -Werror=unused-command-line-argument &&
-    append unknown_warning_flags "-Werror=unused-command-line-argument"
-test_cflags -Werror=unknown-warning-option &&
-    append unknown_warning_flags "-Werror=unknown-warning-option"
+check_c_warning(){
+    warning_flag=$1
+    test_cflags $unknown_warning_cflags $warning_flag && add_cflags $warning_flag
+}
+
+# add some useful compiler flags if supported
+check_warning -Wall
+check_warning -Wdisabled-optimization
+check_warning -Wpointer-arith
+check_warning -Wredundant-decls
+check_warning -Wwrite-strings
+check_warning -Wtype-limits
+check_warning -Wundef
+check_warning -Wempty-body
+check_c_warning -Wmissing-prototypes
+check_c_warning -Wstrict-prototypes
+check_c_warning -Wunterminated-string-initialization
+
+if enabled extra_warnings; then
+    check_warning -Wcast-qual
+    check_warning -Wextra
+    check_warning -Wpedantic
+fi
 
 check_disable_warning -Wno-parentheses
 check_disable_warning -Wno-switch
@@ -7863,7 +7884,7 @@ check_disable_warning -Wno-microsoft-enum-forward-reference
 
 check_disable_warning_headers(){
     warning_flag=-W${1#-Wno-}
-    test_cflags $warning_flag && add_cflags_headers $1
+    test_cflags $unknown_warning_cflags $warning_flag && add_cflags_headers $1
 }
 
 check_disable_warning_headers -Wno-deprecated-declarations
@@ -8157,16 +8178,19 @@ enabled threads || warn \
     "environment."
 
 case $target_os in
-haiku)
-    disable memalign
-    disable posix_memalign
-    ;;
 *-dos|freedos|opendos)
     if test_cpp_condition sys/version.h "defined(__DJGPP__) && __DJGPP__ == 2 && __DJGPP_MINOR__ == 5"; then
         disable memalign
     fi
     ;;
 esac
+
+if ! enabled_any memalign posix_memalign aligned_malloc; then
+    if enabled_any asm inline_asm; then
+        die "ERROR: Building with assembly enabled is not supported on platforms "\
+            "without aligned memory allocations! Try reconfiguring with --disable-asm"
+    fi
+fi
 
 flatten_extralibs(){
     nested_entries=
