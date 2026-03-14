@@ -1,6 +1,4 @@
 /*
- * RV10/RV20 encoder
- *
  * This file is part of FFmpeg.
  *
  * FFmpeg is free software; you can redistribute it and/or
@@ -18,12 +16,16 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVCODEC_RV10ENC_H
-#define AVCODEC_RV10ENC_H
+#ifndef AVCODEC_LCEVCTAB_H
+#define AVCODEC_LCEVCTAB_H
 
-typedef struct MPVMainEncContext MPVMainEncContext;
+#include <stdint.h>
 
-int ff_rv10_encode_picture_header(MPVMainEncContext *m);
-int ff_rv20_encode_picture_header(MPVMainEncContext *m);
+#include "libavutil/attributes_internal.h"
 
-#endif /* AVCODEC_RV10ENC_H */
+EXTERN const struct FFLCEVCDim {
+    uint16_t width;
+    uint16_t height;
+} ff_lcevc_resolution_type[63];
+
+#endif /* AVCODEC_LCEVCTAB_H */
