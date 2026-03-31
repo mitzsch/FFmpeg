@@ -305,6 +305,42 @@ int sws_isSupportedEndiannessConversion(enum AVPixelFormat pix_fmt)
     legacy_format_entries[pix_fmt].is_supported_endianness : 0;
 }
 
+static void sanitize_fmt(SwsFormat *fmt, const AVPixFmtDescriptor *desc)
+{
+    if (desc->flags & (AV_PIX_FMT_FLAG_RGB | AV_PIX_FMT_FLAG_PAL | AV_PIX_FMT_FLAG_BAYER)) {
+        /* RGB-like family */
+        fmt->csp   = AVCOL_SPC_RGB;
+        fmt->range = AVCOL_RANGE_JPEG;
+    } else if (desc->flags & AV_PIX_FMT_FLAG_XYZ) {
+        fmt->csp   = AVCOL_SPC_UNSPECIFIED;
+        fmt->color = (SwsColor) {
+            .prim = AVCOL_PRI_BT709, /* swscale currently hard-codes this XYZ matrix */
+            .trc  = AVCOL_TRC_SMPTE428,
+        };
+    } else if (desc->nb_components < 3) {
+        /* Grayscale formats */
+        fmt->color.prim = AVCOL_PRI_UNSPECIFIED;
+        fmt->csp        = AVCOL_SPC_UNSPECIFIED;
+        if (desc->flags & AV_PIX_FMT_FLAG_FLOAT)
+            fmt->range = AVCOL_RANGE_UNSPECIFIED;
+        else
+            fmt->range = AVCOL_RANGE_JPEG; // FIXME: this restriction should be lifted
+    }
+
+    switch (av_pix_fmt_desc_get_id(desc)) {
+    case AV_PIX_FMT_YUVJ420P:
+    case AV_PIX_FMT_YUVJ411P:
+    case AV_PIX_FMT_YUVJ422P:
+    case AV_PIX_FMT_YUVJ444P:
+    case AV_PIX_FMT_YUVJ440P:
+        fmt->range = AVCOL_RANGE_JPEG;
+        break;
+    }
+
+    if (!desc->log2_chroma_w && !desc->log2_chroma_h)
+        fmt->loc = AVCHROMA_LOC_UNSPECIFIED;
+}
+
 /**
  * This function also sanitizes and strips the input data, removing irrelevant
  * fields for certain formats.
@@ -346,38 +382,7 @@ SwsFormat ff_fmt_from_frame(const AVFrame *frame, int field)
     av_assert1(fmt.height > 0);
     av_assert1(fmt.format != AV_PIX_FMT_NONE);
     av_assert0(desc);
-    if (desc->flags & (AV_PIX_FMT_FLAG_RGB | AV_PIX_FMT_FLAG_PAL | AV_PIX_FMT_FLAG_BAYER)) {
-        /* RGB-like family */
-        fmt.csp   = AVCOL_SPC_RGB;
-        fmt.range = AVCOL_RANGE_JPEG;
-    } else if (desc->flags & AV_PIX_FMT_FLAG_XYZ) {
-        fmt.csp   = AVCOL_SPC_UNSPECIFIED;
-        fmt.color = (SwsColor) {
-            .prim = AVCOL_PRI_BT709, /* swscale currently hard-codes this XYZ matrix */
-            .trc  = AVCOL_TRC_SMPTE428,
-        };
-    } else if (desc->nb_components < 3) {
-        /* Grayscale formats */
-        fmt.color.prim = AVCOL_PRI_UNSPECIFIED;
-        fmt.csp        = AVCOL_SPC_UNSPECIFIED;
-        if (desc->flags & AV_PIX_FMT_FLAG_FLOAT)
-            fmt.range = AVCOL_RANGE_UNSPECIFIED;
-        else
-            fmt.range = AVCOL_RANGE_JPEG; // FIXME: this restriction should be lifted
-    }
-
-    switch (frame->format) {
-    case AV_PIX_FMT_YUVJ420P:
-    case AV_PIX_FMT_YUVJ411P:
-    case AV_PIX_FMT_YUVJ422P:
-    case AV_PIX_FMT_YUVJ444P:
-    case AV_PIX_FMT_YUVJ440P:
-        fmt.range = AVCOL_RANGE_JPEG;
-        break;
-    }
-
-    if (!desc->log2_chroma_w && !desc->log2_chroma_h)
-        fmt.loc = AVCHROMA_LOC_UNSPECIFIED;
+    sanitize_fmt(&fmt, desc);
 
     if (frame->flags & AV_FRAME_FLAG_INTERLACED) {
         fmt.height = (fmt.height + (field == FIELD_TOP)) >> 1;
@@ -472,6 +477,14 @@ skip_hdr10:
         fmt.color.min_luma = av_make_q(0, 1);
 
     return fmt;
+}
+
+void ff_fmt_from_pixfmt(enum AVPixelFormat pixfmt, SwsFormat *fmt)
+{
+    ff_fmt_clear(fmt);
+    fmt->format = pixfmt;
+    fmt->desc = av_pix_fmt_desc_get(pixfmt);
+    sanitize_fmt(fmt, fmt->desc);
 }
 
 static int infer_prim_ref(SwsColor *csp, const SwsColor *ref)
@@ -1256,6 +1269,8 @@ static int fmt_dither(SwsContext *ctx, SwsOpList *ops,
                 .op   = SWS_OP_DITHER,
                 .type = type,
                 .dither.matrix = bias,
+                .dither.min = *bias,
+                .dither.max = *bias,
             });
         } else {
             return 0; /* No-op */
@@ -1270,6 +1285,15 @@ static int fmt_dither(SwsContext *ctx, SwsOpList *ops,
         dither.matrix = generate_bayer_matrix(dither.size_log2);
         if (!dither.matrix)
             return AVERROR(ENOMEM);
+
+        const int size = 1 << dither.size_log2;
+        dither.min = dither.max = dither.matrix[0];
+        for (int i = 1; i < size * size; i++) {
+            if (av_cmp_q(dither.min, dither.matrix[i]) > 0)
+                dither.min = dither.matrix[i];
+            if (av_cmp_q(dither.matrix[i], dither.max) > 0)
+                dither.max = dither.matrix[i];
+        }
 
         /* Brute-forced offsets; minimizes quantization error across a 16x16
          * bayer dither pattern for standard RGBA and YUVA pixel formats */
