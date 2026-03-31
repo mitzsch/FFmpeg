@@ -54,6 +54,8 @@ static bool op_commute_clear(SwsOp *op, SwsOp *next)
     case SWS_OP_SCALE:
     case SWS_OP_READ:
     case SWS_OP_SWIZZLE:
+    case SWS_OP_FILTER_H:
+    case SWS_OP_FILTER_V:
         ff_sws_apply_op_q(next, op->c.q4);
         return true;
     case SWS_OP_SWAP_BYTES:
@@ -107,6 +109,8 @@ static bool op_commute_swizzle(SwsOp *op, SwsOp *next)
     case SWS_OP_LSHIFT:
     case SWS_OP_RSHIFT:
     case SWS_OP_SCALE:
+    case SWS_OP_FILTER_H:
+    case SWS_OP_FILTER_V:
         return true;
 
     /**
@@ -122,7 +126,7 @@ static bool op_commute_swizzle(SwsOp *op, SwsOp *next)
     case SWS_OP_MAX: {
         const SwsConst c = next->c;
         for (int i = 0; i < 4; i++) {
-            if (next->comps.unused[i])
+            if (!SWS_OP_NEEDED(op, i))
                 continue;
             const int j = op->swizzle.in[i];
             if (seen[j] && av_cmp_q(next->c.q4[j], c.q4[i]))
@@ -136,7 +140,7 @@ static bool op_commute_swizzle(SwsOp *op, SwsOp *next)
     case SWS_OP_DITHER: {
         const SwsDitherOp d = next->dither;
         for (int i = 0; i < 4; i++) {
-            if (next->comps.unused[i])
+            if (!SWS_OP_NEEDED(op, i))
                 continue;
             const int j = op->swizzle.in[i];
             if (seen[j] && next->dither.y_offset[j] != d.y_offset[i])
@@ -155,6 +159,51 @@ static bool op_commute_swizzle(SwsOp *op, SwsOp *next)
     case SWS_OP_LINEAR:
     case SWS_OP_PACK:
     case SWS_OP_UNPACK:
+        return false;
+    case SWS_OP_TYPE_NB:
+        break;
+    }
+
+    av_unreachable("Invalid operation type!");
+    return false;
+}
+
+/**
+ * Try to commute a filter op with the previous operation. Makes any
+ * adjustments to the operations as needed, but does not perform the actual
+ * commutation.
+ *
+ * Returns whether successful.
+ */
+static bool op_commute_filter(SwsOp *op, SwsOp *prev)
+{
+    switch (prev->op) {
+    case SWS_OP_SWIZZLE:
+    case SWS_OP_SCALE:
+    case SWS_OP_LINEAR:
+    case SWS_OP_DITHER:
+        prev->type = SWS_PIXEL_F32;
+        return true;
+    case SWS_OP_CONVERT:
+        if (prev->convert.to == SWS_PIXEL_F32) {
+            av_assert0(!prev->convert.expand);
+            FFSWAP(SwsPixelType, op->type, prev->type);
+            return true;
+        }
+        return false;
+    case SWS_OP_INVALID:
+    case SWS_OP_READ:
+    case SWS_OP_WRITE:
+    case SWS_OP_SWAP_BYTES:
+    case SWS_OP_UNPACK:
+    case SWS_OP_PACK:
+    case SWS_OP_LSHIFT:
+    case SWS_OP_RSHIFT:
+    case SWS_OP_CLEAR:
+    case SWS_OP_MIN:
+    case SWS_OP_MAX:
+    case SWS_OP_FILTER_H:
+    case SWS_OP_FILTER_V:
         return false;
     case SWS_OP_TYPE_NB:
         break;
@@ -188,7 +237,7 @@ static int exact_log2_q(const AVRational x)
  * If a linear operation can be reduced to a scalar multiplication, returns
  * the corresponding scaling factor, or 0 otherwise.
  */
-static bool extract_scalar(const SwsLinearOp *c, SwsComps prev, SwsComps next,
+static bool extract_scalar(const SwsLinearOp *c, SwsComps comps, SwsComps prev,
                            SwsConst *out_scale)
 {
     SwsConst scale = {0};
@@ -199,7 +248,8 @@ static bool extract_scalar(const SwsLinearOp *c, SwsComps prev, SwsComps next,
 
     for (int i = 0; i < 4; i++) {
         const AVRational s = c->m[i][i];
-        if ((prev.flags[i] & SWS_COMP_ZERO) || next.unused[i])
+        if ((prev.flags[i]  & SWS_COMP_ZERO) ||
+            (comps.flags[i] & SWS_COMP_GARBAGE))
             continue;
         if (scale.q.den && av_cmp_q(s, scale.q))
             return false;
@@ -287,6 +337,23 @@ int ff_sws_op_list_optimize(SwsOpList *ops)
 retry:
     ff_sws_op_list_update_comps(ops);
 
+    /* Try to push filters towards the input; do this first to unblock
+     * in-place optimizations like linear op fusion */
+    for (int n = 1; n < ops->num_ops; n++) {
+        SwsOp *op = &ops->ops[n];
+        SwsOp *prev = &ops->ops[n - 1];
+
+        switch (op->op) {
+        case SWS_OP_FILTER_H:
+        case SWS_OP_FILTER_V:
+            if (op_commute_filter(op, prev)) {
+                FFSWAP(SwsOp, *op, *prev);
+                goto retry;
+            }
+            break;
+        }
+    }
+
     /* Apply all in-place optimizations (that do not re-order the list) */
     for (int n = 0; n < ops->num_ops; n++) {
         SwsOp dummy = {0};
@@ -297,10 +364,11 @@ retry:
         /* common helper variable */
         bool noop = true;
 
-        if (next->comps.unused[0] && next->comps.unused[1] &&
-            next->comps.unused[2] && next->comps.unused[3])
+        if (!SWS_OP_NEEDED(op, 0) && !SWS_OP_NEEDED(op, 1) &&
+            !SWS_OP_NEEDED(op, 2) && !SWS_OP_NEEDED(op, 3) &&
+            op->op != SWS_OP_WRITE)
         {
-            /* Remove completely unused operations */
+            /* Remove any operation whose output is not needed */
             ff_sws_op_list_remove_at(ops, n, 1);
             goto retry;
         }
@@ -312,14 +380,14 @@ retry:
                 SwsSwizzleOp swiz = SWS_SWIZZLE(0, 1, 2, 3);
                 int nb_planes = 0;
                 for (int i = 0; i < op->rw.elems; i++) {
-                    if (next->comps.unused[i]) {
+                    if (!SWS_OP_NEEDED(op, i)) {
                         swiz.in[i] = 3 - (i - nb_planes); /* map to unused plane */
                         continue;
                     }
 
                     const int idx = nb_planes++;
                     av_assert1(idx <= i);
-                    ops->order_src.in[idx] = ops->order_src.in[i];
+                    ops->plane_src[idx] = ops->plane_src[i];
                     swiz.in[i] = idx;
                 }
 
@@ -327,7 +395,7 @@ retry:
                     op->rw.elems = nb_planes;
                     RET(ff_sws_op_list_insert_at(ops, n + 1, &(SwsOp) {
                         .op = SWS_OP_SWIZZLE,
-                        .type = op->type,
+                        .type = op->rw.filter ? SWS_PIXEL_F32 : op->type,
                         .swizzle = swiz,
                     }));
                     goto retry;
@@ -383,7 +451,7 @@ retry:
                 {
                     /* Redundant clear-to-zero of zero component */
                     op->c.q4[i].den = 0;
-                } else if (next->comps.unused[i]) {
+                } else if (!SWS_OP_NEEDED(op, i)) {
                     /* Unnecessary clear of unused component */
                     op->c.q4[i] = (AVRational) {0, 0};
                 } else if (op->c.q4[i].den) {
@@ -409,7 +477,7 @@ retry:
 
         case SWS_OP_SWIZZLE:
             for (int i = 0; i < 4; i++) {
-                if (next->comps.unused[i])
+                if (!SWS_OP_NEEDED(op, i))
                     continue;
                 if (op->swizzle.in[i] != i)
                     noop = false;
@@ -435,7 +503,7 @@ retry:
                 for (int dst = 0; dst < prev->rw.elems; dst++) {
                     const int src = op->swizzle.in[dst];
                     if (src > dst && src < prev->rw.elems) {
-                        FFSWAP(int, ops->order_src.in[dst], ops->order_src.in[src]);
+                        FFSWAP(int, ops->plane_src[dst], ops->plane_src[src]);
                         for (int i = dst; i < 4; i++) {
                             if (op->swizzle.in[i] == dst)
                                 op->swizzle.in[i] = src;
@@ -451,7 +519,7 @@ retry:
                 for (int dst = 0; dst < next->rw.elems; dst++) {
                     const int src = op->swizzle.in[dst];
                     if (src > dst && src < next->rw.elems) {
-                        FFSWAP(int, ops->order_dst.in[dst], ops->order_dst.in[src]);
+                        FFSWAP(int, ops->plane_dst[dst], ops->plane_dst[src]);
                         FFSWAP(int, op->swizzle.in[dst], op->swizzle.in[src]);
                         goto retry;
                     }
@@ -490,7 +558,7 @@ retry:
 
         case SWS_OP_MIN:
             for (int i = 0; i < 4; i++) {
-                if (next->comps.unused[i] || !op->c.q4[i].den)
+                if (!SWS_OP_NEEDED(op, i) || !op->c.q4[i].den)
                     continue;
                 if (av_cmp_q(op->c.q4[i], prev->comps.max[i]) < 0)
                     noop = false;
@@ -504,7 +572,7 @@ retry:
 
         case SWS_OP_MAX:
             for (int i = 0; i < 4; i++) {
-                if (next->comps.unused[i] || !op->c.q4[i].den)
+                if (!SWS_OP_NEEDED(op, i) || !op->c.q4[i].den)
                     continue;
                 if (av_cmp_q(prev->comps.min[i], op->c.q4[i]) < 0)
                     noop = false;
@@ -520,7 +588,7 @@ retry:
             for (int i = 0; i < 4; i++) {
                 if (op->dither.y_offset[i] < 0)
                     continue;
-                if (next->comps.unused[i] || (prev->comps.flags[i] & SWS_COMP_EXACT)) {
+                if (!SWS_OP_NEEDED(op, i) || (prev->comps.flags[i] & SWS_COMP_EXACT)) {
                     op->dither.y_offset[i] = -1; /* unnecessary dither */
                     goto retry;
                 } else {
@@ -577,7 +645,7 @@ retry:
             /* Optimize away unused rows */
             for (int i = 0; i < 4; i++) {
                 const uint32_t row = SWS_MASK_ROW(i);
-                if (!next->comps.unused[i] || !(op->lin.mask & row))
+                if (SWS_OP_NEEDED(op, i) || !(op->lin.mask & row))
                     continue;
                 for (int j = 0; j < 5; j++)
                     op->lin.m[i][j] = Q(i == j);
@@ -597,7 +665,7 @@ retry:
             }
 
             /* Multiplication by scalar constant */
-            if (extract_scalar(&op->lin, prev->comps, next->comps, &c)) {
+            if (extract_scalar(&op->lin, op->comps, prev->comps, &c)) {
                 op->op = SWS_OP_SCALE;
                 op->c  = c;
                 goto retry;
@@ -624,6 +692,17 @@ retry:
                 goto retry;
             }
 
+            /* Merge consecutive scaling operations (that don't overflow) */
+            if (next->op == SWS_OP_SCALE) {
+                int64_t p = op->c.q.num * (int64_t) next->c.q.num;
+                int64_t q = op->c.q.den * (int64_t) next->c.q.den;
+                if (FFABS(p) <= INT_MAX && FFABS(q) <= INT_MAX) {
+                    av_reduce(&op->c.q.num, &op->c.q.den, p, q, INT_MAX);
+                    ff_sws_op_list_remove_at(ops, n + 1, 1);
+                    goto retry;
+                }
+            }
+
             /* Scaling by exact power of two */
             if (factor2 && ff_sws_pixel_type_is_int(op->type)) {
                 op->op = factor2 > 0 ? SWS_OP_LSHIFT : SWS_OP_RSHIFT;
@@ -632,6 +711,18 @@ retry:
             }
             break;
         }
+
+        case SWS_OP_FILTER_H:
+        case SWS_OP_FILTER_V:
+            /* Merge with prior simple planar read */
+            if (prev->op == SWS_OP_READ && !prev->rw.filter &&
+                !prev->rw.packed && !prev->rw.frac) {
+                prev->rw.filter = op->op;
+                prev->rw.kernel = av_refstruct_ref(op->filter.kernel);
+                ff_sws_op_list_remove_at(ops, n, 1);
+                goto retry;
+            }
+            break;
         }
     }
 
@@ -691,7 +782,8 @@ int ff_sws_solve_shuffle(const SwsOpList *const ops, uint8_t shuffle[],
         return AVERROR(EINVAL);
 
     const SwsOp *read = ff_sws_op_list_input(ops);
-    if (!read || read->rw.frac || (!read->rw.packed && read->rw.elems > 1))
+    if (!read || read->rw.frac || read->rw.filter ||
+        (!read->rw.packed && read->rw.elems > 1))
         return AVERROR(ENOTSUP);
 
     const int read_size = ff_sws_pixel_type_size(read->type);
@@ -741,7 +833,8 @@ int ff_sws_solve_shuffle(const SwsOpList *const ops, uint8_t shuffle[],
         }
 
         case SWS_OP_WRITE: {
-            if (op->rw.frac || (!op->rw.packed && op->rw.elems > 1))
+            if (op->rw.frac || op->rw.filter ||
+                (!op->rw.packed && op->rw.elems > 1))
                 return AVERROR(ENOTSUP);
 
             /* Initialize to no-op */
@@ -775,4 +868,164 @@ int ff_sws_solve_shuffle(const SwsOpList *const ops, uint8_t shuffle[],
     }
 
     return AVERROR(EINVAL);
+}
+
+/**
+ * Determine a suitable intermediate buffer format for a given combination
+ * of pixel types and number of planes. The exact interpretation of these
+ * formats does not matter at all; since they will only ever be used as
+ * temporary intermediate buffers. We still need to pick *some* format as
+ * a consequence of ff_sws_graph_add_pass() taking an AVPixelFormat for the
+ * output buffer.
+ */
+static enum AVPixelFormat get_planar_fmt(SwsPixelType type, int nb_planes)
+{
+    switch (ff_sws_pixel_type_size(type)) {
+    case 1:
+        switch (nb_planes) {
+        case 1: return AV_PIX_FMT_GRAY8;
+        case 2: return AV_PIX_FMT_YUV444P; // FIXME: no 2-plane planar fmt
+        case 3: return AV_PIX_FMT_YUV444P;
+        case 4: return AV_PIX_FMT_YUVA444P;
+        }
+        break;
+    case 2:
+        switch (nb_planes) {
+        case 1: return AV_PIX_FMT_GRAY16;
+        case 2: return AV_PIX_FMT_YUV444P16; // FIXME: no 2-plane planar fmt
+        case 3: return AV_PIX_FMT_YUV444P16;
+        case 4: return AV_PIX_FMT_YUVA444P16;
+        }
+        break;
+    case 4:
+        switch (nb_planes) {
+        case 1: return AV_PIX_FMT_GRAYF32;
+        case 2: return AV_PIX_FMT_GBRPF32; // FIXME: no 2-plane planar fmt
+        case 3: return AV_PIX_FMT_GBRPF32;
+        case 4: return AV_PIX_FMT_GBRAPF32;
+        }
+        break;
+    }
+
+    av_unreachable("Invalid pixel type or number of planes?");
+    return AV_PIX_FMT_NONE;
+}
+
+static void get_input_size(const SwsOpList *ops, SwsFormat *fmt)
+{
+    fmt->width  = ops->src.width;
+    fmt->height = ops->src.height;
+
+    const SwsOp *read = ff_sws_op_list_input(ops);
+    if (read && read->rw.filter == SWS_OP_FILTER_V) {
+        fmt->height = read->rw.kernel->dst_size;
+    } else if (read && read->rw.filter == SWS_OP_FILTER_H) {
+        fmt->width = read->rw.kernel->dst_size;
+    }
+}
+
+int ff_sws_op_list_subpass(SwsOpList *ops1, SwsOpList **out_rest)
+{
+    const SwsOp *op;
+    int ret, idx;
+
+    for (idx = 0; idx < ops1->num_ops; idx++) {
+        op = &ops1->ops[idx];
+        if (op->op == SWS_OP_FILTER_H || op->op == SWS_OP_FILTER_V)
+            break;
+    }
+
+    if (idx == ops1->num_ops) {
+        *out_rest = NULL;
+        return 0;
+    }
+
+    av_assert0(idx > 0);
+    const SwsOp *prev = &ops1->ops[idx - 1];
+
+    SwsOpList *ops2 = ff_sws_op_list_duplicate(ops1);
+    if (!ops2)
+        return AVERROR(ENOMEM);
+
+    /**
+     * Not all components may be needed; but we need the ones that *are*
+     * used to be contiguous for the write/read operations. So, first
+     * compress them into a linearly ascending list of components
+     */
+    int nb_planes = 0;
+    SwsSwizzleOp swiz_wr = SWS_SWIZZLE(0, 1, 2, 3);
+    SwsSwizzleOp swiz_rd = SWS_SWIZZLE(0, 1, 2, 3);
+    for (int i = 0; i < 4; i++) {
+        if (SWS_OP_NEEDED(prev, i)) {
+            const int o = nb_planes++;
+            swiz_wr.in[o] = i;
+            swiz_rd.in[i] = o;
+        }
+    }
+
+    /* Determine metadata for the intermediate format */
+    const SwsPixelType type = op->type;
+    ops2->comps_src = prev->comps;
+    ops2->src.format = get_planar_fmt(type, nb_planes);
+    ops2->src.desc = av_pix_fmt_desc_get(ops2->src.format);
+    get_input_size(ops1, &ops2->src);
+    ops1->dst = ops2->src;
+
+    for (int i = 0; i < nb_planes; i++)
+        ops1->plane_dst[i] = ops2->plane_src[i] = i;
+
+    ff_sws_op_list_remove_at(ops1, idx, ops1->num_ops - idx);
+    ff_sws_op_list_remove_at(ops2, 0, idx);
+    op = NULL; /* the above command may invalidate op */
+
+    if (swiz_wr.mask != SWS_SWIZZLE(0, 1, 2, 3).mask) {
+        ret = ff_sws_op_list_append(ops1, &(SwsOp) {
+            .op      = SWS_OP_SWIZZLE,
+            .type    = type,
+            .swizzle = swiz_wr,
+        });
+        if (ret < 0)
+            goto fail;
+    }
+
+    ret = ff_sws_op_list_append(ops1, &(SwsOp) {
+        .op       = SWS_OP_WRITE,
+        .type     = type,
+        .rw.elems = nb_planes,
+    });
+    if (ret < 0)
+        goto fail;
+
+    ret = ff_sws_op_list_insert_at(ops2, 0, &(SwsOp) {
+        .op        = SWS_OP_READ,
+        .type      = type,
+        .rw.elems  = nb_planes,
+    });
+    if (ret < 0)
+        goto fail;
+
+    if (swiz_rd.mask != SWS_SWIZZLE(0, 1, 2, 3).mask) {
+        ret = ff_sws_op_list_insert_at(ops2, 1, &(SwsOp) {
+            .op      = SWS_OP_SWIZZLE,
+            .type    = type,
+            .swizzle = swiz_rd,
+        });
+        if (ret < 0)
+            goto fail;
+    }
+
+    ret = ff_sws_op_list_optimize(ops1);
+    if (ret < 0)
+        goto fail;
+
+    ret = ff_sws_op_list_optimize(ops2);
+    if (ret < 0)
+        goto fail;
+
+    *out_rest = ops2;
+    return 0;
+
+fail:
+    ff_sws_op_list_free(&ops2);
+    return ret;
 }
