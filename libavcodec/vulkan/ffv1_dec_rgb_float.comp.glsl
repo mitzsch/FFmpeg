@@ -1,5 +1,7 @@
-/**
- * Copyright (C) 2026 Lynne
+/*
+ * FFv1 codec
+ *
+ * Copyright (c) 2026 Lynne <dev@lynne.ee>
  *
  * This file is part of FFmpeg.
  *
@@ -18,24 +20,12 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef SWSCALE_VULKAN_OPS_H
-#define SWSCALE_VULKAN_OPS_H
+#pragma shader_stage(compute)
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_image_load_formatted : require
 
-#include "libavutil/vulkan.h"
-#include "../swscale.h"
+layout (set = 1, binding = 5) writeonly uniform image2D dst[];
 
-#if CONFIG_LIBSHADERC || CONFIG_LIBGLSLANG
-#include "libavutil/vulkan_spirv.h"
-#endif
-
-typedef struct FFVulkanOpsCtx {
-    FFVulkanContext vkctx;
-    AVVulkanDeviceQueueFamily *qf;
-#if CONFIG_LIBSHADERC || CONFIG_LIBGLSLANG
-    FFVkSPIRVCompiler *spvc;
-#endif
-} FFVulkanOpsCtx;
-
-int ff_sws_vk_init(SwsContext *sws, AVBufferRef *dev_ref);
-
-#endif /* SWSCALE_VULKAN_OPS_H */
+#define FLOAT
+#define RGB
+#include "ffv1_dec.comp.glsl"
