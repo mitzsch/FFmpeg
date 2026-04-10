@@ -287,6 +287,7 @@ TESTPROGS = adler32                                                     \
             lfg                                                         \
             lls                                                         \
             log                                                         \
+            mathematics                                                 \
             md5                                                         \
             murmur3                                                     \
             opt                                                         \
@@ -297,13 +298,16 @@ TESTPROGS = adler32                                                     \
             pixfmt_best                                                 \
             random_seed                                                 \
             rational                                                    \
+            rc4                                                         \
             ripemd                                                      \
             sha                                                         \
             sha512                                                      \
+            samplefmt                                                   \
             side_data_array                                             \
             softfloat                                                   \
             spherical                                                   \
             stereo3d                                                    \
+            timecode                                                    \
             tree                                                        \
             twofish                                                     \
             utf8                                                        \
