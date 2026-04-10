@@ -34,7 +34,9 @@ extern const SwsOpBackend backend_c;
 extern const SwsOpBackend backend_murder;
 extern const SwsOpBackend backend_aarch64;
 extern const SwsOpBackend backend_x86;
+#if HAVE_SPIRV_HEADERS_SPIRV_H || HAVE_SPIRV_UNIFIED1_SPIRV_H
 extern const SwsOpBackend backend_spirv;
+#endif
 #if CONFIG_LIBSHADERC || CONFIG_LIBGLSLANG
 extern const SwsOpBackend backend_glsl;
 #endif
@@ -47,11 +49,11 @@ const SwsOpBackend * const ff_sws_op_backends[] = {
     &backend_x86,
 #endif
     &backend_c,
-#if CONFIG_VULKAN
+#if HAVE_SPIRV_HEADERS_SPIRV_H || HAVE_SPIRV_UNIFIED1_SPIRV_H
     &backend_spirv,
+#endif
 #if CONFIG_LIBSHADERC || CONFIG_LIBGLSLANG
     &backend_glsl,
-#endif
 #endif
     NULL
 };
@@ -336,6 +338,7 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
              * other components are explicitly stripped */
             for (int i = 0; i < op->rw.elems; i++) {
                 const int idx = op->rw.packed ? i : ops->plane_src[i];
+                av_assert0(!(ops->comps_src.flags[idx] & SWS_COMP_GARBAGE));
                 op->comps.flags[i] = ops->comps_src.flags[idx];
                 op->comps.min[i]   = ops->comps_src.min[idx];
                 op->comps.max[i]   = ops->comps_src.max[idx];
