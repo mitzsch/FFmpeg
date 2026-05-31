@@ -1017,6 +1017,11 @@ static int mov_write_chan_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *tra
         return ret;
     }
 
+    /* no predefined tag found + ch_layout in AV_CHANNEL_ORDER_NATIVE
+     * but bitstream channels not actually in native order */
+    if (layout_tag == MOV_CH_LAYOUT_UNKNOWN)
+        return 0;
+
     if (layout_tag == MOV_CH_LAYOUT_MONO && track->mono_as_fc > 0) {
         av_assert0(!channel_desc);
         channel_desc = av_malloc(sizeof(*channel_desc));
@@ -2532,6 +2537,14 @@ static int mov_write_dvcc_dvvc_tag(AVFormatContext *s, AVIOContext *pb, AVDOVIDe
     return 32; /* 8 + 24 */
 }
 
+static int mov_write_hvce_tag(AVIOContext *pb, const AVPacketSideData *sd)
+{
+    avio_wb32(pb, 8 + sd->size);
+    ffio_wfourcc(pb, "hvcE");
+    avio_write(pb, sd->data, sd->size);
+    return 8 + sd->size;
+}
+
 static int mov_write_clap_tag(AVIOContext *pb, MOVTrack *track,
                               uint32_t top, uint32_t bottom,
                               uint32_t left, uint32_t right)
@@ -2998,6 +3011,15 @@ static int mov_write_video_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContex
             mov_write_dvcc_dvvc_tag(s, pb, (AVDOVIDecoderConfigurationRecord *)dovi->data);
         } else if (dovi) {
             av_log(mov->fc, AV_LOG_WARNING, "Not writing 'dvcC'/'dvvC' box. Requires -strict unofficial.\n");
+        }
+
+        const AVPacketSideData *hvce = av_packet_side_data_get(track->st->codecpar->coded_side_data,
+                                                               track->st->codecpar->nb_coded_side_data,
+                                                               AV_PKT_DATA_HEVC_CONF);
+        if (hvce && mov->fc->strict_std_compliance <= FF_COMPLIANCE_UNOFFICIAL) {
+            mov_write_hvce_tag(pb, hvce);
+        } else if (hvce) {
+            av_log(mov->fc, AV_LOG_WARNING, "Not writing 'hvcE' box. Requires -strict unofficial.\n");
         }
     }
 
@@ -5393,7 +5415,12 @@ static int mov_write_moov_tag(AVIOContext *pb, MOVMuxContext *mov,
                 int ret = mov_add_tref_id(mov, tag, track->track_id);
                 if (ret < 0)
                     return ret;
-                //src_trk may have a different timescale than the tmcd track
+            }
+            if (track->nb_src_track) {
+                /* Derive the duration from the first source track, matching
+                 * the convention used by get_pts_range() and the rtp/lvc1
+                 * branches above. The source may use a different timescale. */
+                int src_trk = track->src_track[0];
                 track->track_duration = av_rescale(mov->tracks[src_trk].track_duration,
                                                    track->timescale,
                                                    mov->tracks[src_trk].timescale);
@@ -8238,12 +8265,12 @@ static int mov_init(AVFormatContext *s)
                 av_log(s, AV_LOG_ERROR, "Exactly two Streams are supported for Stream Groups of type LCEVC\n");
                 return AVERROR(EINVAL);
             }
-            AVStreamGroupLCEVC *lcevc = stg->params.lcevc;
-            if (lcevc->lcevc_index > 1)
+            AVStreamGroupLayeredVideo *lcevc = stg->params.layered_video;
+            if (lcevc->el_index > 1)
                 return AVERROR(EINVAL);
-            AVStream *st = stg->streams[lcevc->lcevc_index];
+            AVStream *st = stg->streams[lcevc->el_index];
             if (st->codecpar->codec_id != AV_CODEC_ID_LCEVC) {
-                av_log(s, AV_LOG_ERROR, "Stream #%u is not an LCEVC stream\n", lcevc->lcevc_index);
+                av_log(s, AV_LOG_ERROR, "Stream #%u is not an LCEVC stream\n", lcevc->el_index);
                 return AVERROR(EINVAL);
             }
         }
@@ -8587,14 +8614,14 @@ static int mov_init(AVFormatContext *s)
 
         switch (stg->type) {
         case AV_STREAM_GROUP_PARAMS_LCEVC: {
-            AVStreamGroupLCEVC *lcevc = stg->params.lcevc;
-            AVStream *st    = stg->streams[lcevc->lcevc_index];
+            AVStreamGroupLayeredVideo *lcevc = stg->params.layered_video;
+            AVStream *st    = stg->streams[lcevc->el_index];
             MOVTrack *track = st->priv_data;
 
             for (int j = 0; j < mov->nb_tracks; j++) {
                 MOVTrack *trk = &mov->tracks[j];
 
-                if (trk->st == stg->streams[!lcevc->lcevc_index]) {
+                if (trk->st == stg->streams[!lcevc->el_index]) {
                     track->src_track = av_malloc(sizeof(*track->src_track));
                     if (!track->src_track)
                         return AVERROR(ENOMEM);
@@ -8619,6 +8646,9 @@ static int mov_init(AVFormatContext *s)
             for (int j = 0; j < stg->nb_streams; j++) {
                 const AVStream *st2 = stg->streams[j];
                 int index = -1;
+
+                if (j == tref->metadata_index)
+                    continue;
 
                 for (int k = 0; k < mov->nb_tracks; k++) {
                     if (mov->tracks[k].st != st2)
