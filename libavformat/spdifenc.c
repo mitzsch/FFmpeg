@@ -54,8 +54,14 @@
 #include "libavcodec/adts_parser.h"
 #include "libavcodec/dca.h"
 #include "libavcodec/dca_syncwords.h"
+#include "libavcodec/get_bits.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
+
+#define TRUEHD_MAT_BUFFER_COUNT 4 /* Have observed the need for 3 during branch detection.
+                                   * +1 headroom for unobserved cases.
+                                   */
+static int truehd_output_timing_logged; /* temporary message for debugging */
 
 typedef struct IEC61937Context {
     const AVClass *av_class;
@@ -71,23 +77,29 @@ typedef struct IEC61937Context {
     int use_preamble;               ///< preamble enabled (disabled for exactly pre-padded DTS)
     int extra_bswap;                ///< extra bswap for payload (for LE DTS => standard BE DTS)
 
-    uint8_t *hd_buf[2];             ///< allocated buffers to concatenate hd audio frames
+    uint8_t *hd_buf[TRUEHD_MAT_BUFFER_COUNT]; ///< allocated buffers to concatenate hd audio frames
     int hd_buf_size;                ///< size of the hd audio buffer (eac3, dts4)
     int hd_buf_count;               ///< number of frames in the hd audio buffer (eac3)
     int hd_buf_filled;              ///< amount of bytes in the hd audio buffer (eac3, truehd)
     int hd_buf_idx;                 ///< active hd buffer index (truehd)
+    int truehd_out_buf_idx;         ///< oldest completed TrueHD MAT buffer ready to write
+    int truehd_ready_count;         ///< number of completed TrueHD MAT buffers ready to write
 
     int dtshd_skip;                 ///< counter used for skipping DTS-HD frames
 
     uint16_t truehd_prev_time;      ///< input_timing from the last frame
     int truehd_prev_size;           ///< previous frame size in bytes, including any MAT codes
     int truehd_samples_per_frame;   ///< samples per frame for padding calculation
+    uint16_t truehd_output_timing;  ///< expected output_timing for TrueHD restart headers
+    int truehd_output_timing_valid;
+    int truehd_io_offset;           ///< signed relation between output_timing and input_timing
 
     /* AVOptions: */
     int dtshd_rate;
     int dtshd_fallback;
 #define SPDIF_FLAG_BIGENDIAN    0x01
     int spdif_flags;
+    int reset_requested;
 
     /// function, which generates codec dependent header information.
     /// Sets data_type and pkt_offset, and length_code, out_bytes, out_buf if necessary
@@ -99,6 +111,7 @@ static const AVOption options[] = {
 { "be", "output in big-endian format (for use as s16be)", 0, AV_OPT_TYPE_CONST, {.i64 = SPDIF_FLAG_BIGENDIAN},  0, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM, .unit = "spdif_flags" },
 { "dtshd_rate", "mux complete DTS frames in HD mode at the specified IEC958 rate (in Hz, default 0=disabled)", offsetof(IEC61937Context, dtshd_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 768000, AV_OPT_FLAG_ENCODING_PARAM },
 { "dtshd_fallback_time", "min secs to strip HD for after an overflow (-1: till the end, default 60)", offsetof(IEC61937Context, dtshd_fallback), AV_OPT_TYPE_INT, {.i64 = 60}, -1, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM },
+{ "reset", "discard muxer state before the next packet", offsetof(IEC61937Context, reset_requested), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_ENCODING_PARAM | AV_OPT_FLAG_RUNTIME_PARAM },
 { NULL },
 };
 
@@ -420,32 +433,185 @@ static const struct {
     MAT_CODE(MAT_FRAME_SIZE - sizeof(mat_end_code), mat_end_code),
 };
 
+static int truehd_next_mat_buffer(int idx)
+{
+    return (idx + 1) % TRUEHD_MAT_BUFFER_COUNT;
+}
+
+static int truehd_enqueue_mat(AVFormatContext *s)
+{
+    IEC61937Context *ctx = s->priv_data;
+
+    if (ctx->truehd_ready_count >= TRUEHD_MAT_BUFFER_COUNT - 1) {
+        av_log(s, AV_LOG_ERROR, "Too many completed TrueHD MAT frames pending\n");
+        return AVERROR(EINVAL);
+    }
+
+    ctx->truehd_ready_count++;
+    ctx->hd_buf_idx = truehd_next_mat_buffer(ctx->hd_buf_idx);
+    return 0;
+}
+
+static void spdif_reset_state(AVFormatContext *s)
+{
+    IEC61937Context *ctx = s->priv_data;
+
+    ctx->hd_buf_count = 0;
+    ctx->hd_buf_filled = 0;
+    ctx->hd_buf_idx = 0;
+    ctx->truehd_out_buf_idx = 0;
+    ctx->truehd_ready_count = 0;
+    ctx->dtshd_skip = 0;
+
+    ctx->truehd_prev_time = 0;
+    ctx->truehd_prev_size = 0;
+    ctx->truehd_output_timing = 0;
+    ctx->truehd_output_timing_valid = 0;
+    ctx->truehd_io_offset = 0;
+
+    ctx->out_buf = NULL;
+    ctx->out_bytes = 0;
+    ctx->length_code = 0;
+    ctx->pkt_offset = 0;
+}
+
+typedef struct TrueHDAccessUnitInfo {
+    uint16_t input_timing;
+    uint16_t output_timing;
+    int has_output_timing;
+    int samples_per_frame;
+} TrueHDAccessUnitInfo;
+
+static int truehd_parse_access_unit(const uint8_t *au_data, int au_size,
+                                    TrueHDAccessUnitInfo *au)
+{
+    GetBitContext gb;
+    int major_sync_size = 28;
+    int ratebits;
+    int num_substreams;
+    int sync_word;
+    int ret;
+    int i;
+    const uint8_t *data;
+    int size;
+
+    memset(au, 0, sizeof(*au));
+
+    if (au_size < 4)
+        return AVERROR_INVALIDDATA;
+
+    data = au_data + 4;
+    size = au_size - 4;
+
+    au->input_timing = AV_RB16(au_data + 2);
+
+    if (size < 6 || AV_RB24(data) != 0xf8726f)
+        return 0;
+
+    /* major sync unit, fetch sample rate */
+    if (data[3] == 0xba)
+        ratebits = data[4] >> 4;
+    else if (data[3] == 0xbb)
+        ratebits = data[5] >> 4;
+    else
+        return AVERROR_INVALIDDATA;
+    au->samples_per_frame = 40 << (ratebits & 3);
+
+    if (size < 27)
+        return 0;
+
+    if (data[3] == 0xba && data[25] & 1) {
+        int ext_size = data[26] >> 4;
+        major_sync_size += 2 + ext_size * 2;
+    }
+
+    if (major_sync_size > size)
+        return 0;
+
+    ret = init_get_bits8(&gb, data + major_sync_size, size - major_sync_size);
+    if (ret < 0)
+        return ret;
+
+    num_substreams = data[16] >> 4;
+    if (num_substreams <= 0)
+        return 0;
+
+    for (i = 0; i < num_substreams; i++) {
+        int extra_word;
+        if (get_bits_left(&gb) < 16)
+            return 0;
+        extra_word = get_bits1(&gb);
+        skip_bits_long(&gb, 15);
+        if (!extra_word)
+            continue;
+        if (get_bits_left(&gb) < 16)
+            return 0;
+        skip_bits_long(&gb, 16);
+    }
+
+    /*
+     * So far output timing has always been found in the first substream if it
+     * is present at all, so for now only walk the first substream.
+     */
+    if (get_bits_left(&gb) < 1)
+        return 0;
+    if (!get_bits1(&gb)) /* ! block_header_exists */
+        return 0;
+    if (get_bits_left(&gb) < 1)
+        return 0;
+    if (!get_bits1(&gb)) /* ! restart_header_exists */
+        return 0;
+    if (get_bits_left(&gb) < 13 + 1 + 16)
+        return 0;
+
+    sync_word = get_bits(&gb, 13);
+    if (sync_word != (0x31ea >> 1))
+        return 0;
+    skip_bits1(&gb); /* noise_type */
+
+    au->output_timing = get_bits(&gb, 16);
+    au->has_output_timing = 1;
+
+    return 0;
+}
+
+static int truehd_signed_delta(uint16_t a, uint16_t b)
+{
+    int delta = (uint16_t)(a - b);
+    /*
+     * Compute the difference in modulo-2^16 counter space and interpret it as
+     * the signed shortest-path delta.  |a-b| is expected to be < 2^15
+     */
+    return delta >= 0x8000 ? delta - 0x10000 : delta;
+}
+
 static int spdif_header_truehd(AVFormatContext *s, AVPacket *pkt)
 {
     IEC61937Context *ctx = s->priv_data;
     uint8_t *hd_buf = ctx->hd_buf[ctx->hd_buf_idx];
-    int ratebits;
+    TrueHDAccessUnitInfo au;
     int padding_remaining = 0;
+    int max_padding_per_packet = MAT_FRAME_SIZE * 2;
+    int output_discontinuity = 0;
     uint16_t input_timing;
     int total_frame_size = pkt->size;
     const uint8_t *dataptr = pkt->data;
     int data_remaining = pkt->size;
     int have_pkt = 0;
     int next_code_idx;
+    int ret;
 
-    if (pkt->size < 10)
-        return AVERROR_INVALIDDATA;
+    ret = truehd_parse_access_unit(pkt->data, pkt->size, &au);
+    if (ret < 0)
+        return ret;
 
-    if (AV_RB24(pkt->data + 4) == 0xf8726f) {
-        /* major sync unit, fetch sample rate */
-        if (pkt->data[7] == 0xba)
-            ratebits = pkt->data[8] >> 4;
-        else if (pkt->data[7] == 0xbb)
-            ratebits = pkt->data[9] >> 4;
-        else
-            return AVERROR_INVALIDDATA;
+    if (au.has_output_timing && !truehd_output_timing_logged) {
+        av_log(s, AV_LOG_WARNING, "TrueHD/MLP output_timing handling active\n");
+        truehd_output_timing_logged = 1;
+    }
 
-        ctx->truehd_samples_per_frame = 40 << (ratebits & 3);
+    if (au.samples_per_frame) {
+        ctx->truehd_samples_per_frame = au.samples_per_frame;
         av_log(s, AV_LOG_TRACE, "TrueHD samples per frame: %d\n",
                ctx->truehd_samples_per_frame);
     }
@@ -453,8 +619,46 @@ static int spdif_header_truehd(AVFormatContext *s, AVPacket *pkt)
     if (!ctx->truehd_samples_per_frame)
         return AVERROR_INVALIDDATA;
 
-    input_timing = AV_RB16(pkt->data + 2);
-    if (ctx->truehd_prev_size) {
+    input_timing = au.input_timing;
+
+    ctx->truehd_output_timing += ctx->truehd_samples_per_frame;
+    if (au.has_output_timing) {
+        if (ctx->truehd_output_timing_valid &&
+            au.output_timing != ctx->truehd_output_timing) {
+            int unit_size = 2560 / ctx->truehd_samples_per_frame;
+            uint16_t output_timing_before_au = au.output_timing -
+                                               ctx->truehd_samples_per_frame;
+            int previous_io_offset = ctx->truehd_io_offset;
+            int current_io_offset = truehd_signed_delta(output_timing_before_au,
+                                                        input_timing);
+            int carried_padding = 0;
+
+            output_discontinuity = 1;
+            if (previous_io_offset >= 0 && current_io_offset >= 0 &&
+                previous_io_offset >= current_io_offset)
+                carried_padding = (previous_io_offset - current_io_offset) * unit_size;
+
+            if (ctx->truehd_prev_size)
+                padding_remaining = 40 * unit_size - ctx->truehd_prev_size +
+                                    carried_padding;
+            else
+                padding_remaining = carried_padding;
+
+            if (padding_remaining < 0)
+                padding_remaining = 0;
+
+            av_log(s, AV_LOG_VERBOSE,
+                   "TrueHD output_timing discontinuity: expected %"PRIu16" got %"PRIu16", "
+                   "offset %d => %d, carry padding %d, total padding %d\n",
+                   ctx->truehd_output_timing, au.output_timing, previous_io_offset,
+                   current_io_offset, carried_padding, padding_remaining);
+        }
+
+        ctx->truehd_output_timing = au.output_timing;
+        ctx->truehd_output_timing_valid = 1;
+    }
+
+    if (ctx->truehd_prev_size && !output_discontinuity) {
         uint16_t delta_samples = input_timing - ctx->truehd_prev_time;
         /*
          * One multiple-of-48kHz frame is 1/1200 sec and the IEC 61937 rate
@@ -474,11 +678,26 @@ static int spdif_header_truehd(AVFormatContext *s, AVPacket *pkt)
                delta_samples, delta_bytes);
 
         /* sanity check */
-        if (padding_remaining < 0 || padding_remaining >= MAT_FRAME_SIZE / 2) {
-            avpriv_request_sample(s, "Unusual frame timing: %"PRIu16" => %"PRIu16", %d samples/frame",
+        if (padding_remaining < 0 || padding_remaining > max_padding_per_packet) {
+            avpriv_request_sample(s, "Unusual frame timing: %"PRIu16" => %"PRIu16", %d samples/frame. "
+                                  "May require reset after seek.",
                                   ctx->truehd_prev_time, input_timing, ctx->truehd_samples_per_frame);
             padding_remaining = 0;
         }
+    }
+
+    if (padding_remaining > max_padding_per_packet) {
+        av_log(s, AV_LOG_VERBOSE,
+               "TrueHD dropping %d bytes of padding above %d-byte limit\n",
+               padding_remaining, max_padding_per_packet);
+        padding_remaining = 0;
+    }
+
+    if (ctx->truehd_output_timing_valid) {
+        uint16_t output_timing_before_au = ctx->truehd_output_timing -
+                                           ctx->truehd_samples_per_frame;
+        ctx->truehd_io_offset = truehd_signed_delta(output_timing_before_au,
+                                                    input_timing);
     }
 
     for (next_code_idx = 0; next_code_idx < FF_ARRAY_ELEMS(mat_codes); next_code_idx++)
@@ -505,8 +724,10 @@ static int spdif_header_truehd(AVFormatContext *s, AVPacket *pkt)
 
                 /* this was the last code, move to the next MAT frame */
                 have_pkt = 1;
-                ctx->out_buf = hd_buf;
-                ctx->hd_buf_idx ^= 1;
+                ret = truehd_enqueue_mat(s);
+                if (ret < 0)
+                    return ret;
+
                 hd_buf = ctx->hd_buf[ctx->hd_buf_idx];
                 ctx->hd_buf_filled = 0;
 
@@ -626,7 +847,13 @@ static av_always_inline void spdif_put_16(IEC61937Context *ctx,
 static int spdif_write_packet(struct AVFormatContext *s, AVPacket *pkt)
 {
     IEC61937Context *ctx = s->priv_data;
-    int ret, padding;
+    int padding;
+    int ret;
+
+    if (ctx->reset_requested) {
+        spdif_reset_state(s);
+        ctx->reset_requested = 0;
+    }
 
     ctx->out_buf = pkt->data;
     ctx->out_bytes = pkt->size;
@@ -637,6 +864,30 @@ static int spdif_write_packet(struct AVFormatContext *s, AVPacket *pkt)
     ret = ctx->header_info(s, pkt);
     if (ret < 0)
         return ret;
+
+    if (ctx->header_info == spdif_header_truehd) {
+        int ready_idx;
+
+        if (!ctx->truehd_ready_count)
+            return 0;
+
+        if (ctx->truehd_ready_count > 1)
+            av_log(s, AV_LOG_VERBOSE, "TrueHD MAT queue depth is %d frames\n",
+                   ctx->truehd_ready_count);
+
+        ready_idx = ctx->truehd_out_buf_idx;
+        ctx->truehd_out_buf_idx = truehd_next_mat_buffer(ctx->truehd_out_buf_idx);
+        ctx->truehd_ready_count--;
+
+        ctx->out_buf     = ctx->hd_buf[ready_idx];
+        ctx->out_bytes   = MAT_FRAME_SIZE;
+        ctx->data_type   = IEC61937_TRUEHD;
+        ctx->length_code = MAT_FRAME_SIZE;
+        ctx->pkt_offset  = MAT_PKT_OFFSET;
+        ctx->use_preamble = 1;
+        ctx->extra_bswap = 0;
+    }
+
     if (!ctx->pkt_offset)
         return 0;
 
