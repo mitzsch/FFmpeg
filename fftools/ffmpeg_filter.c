@@ -1037,6 +1037,7 @@ void fg_free(FilterGraph **pfg)
         av_frame_free(&ifp->opts.fallback);
 
         av_buffer_unref(&ifp->hw_frames_ctx);
+        av_channel_layout_uninit(&ifp->ch_layout);
         av_freep(&ifilter->linklabel);
         av_freep(&ifp->opts.name);
         av_frame_side_data_free(&ifp->side_data, &ifp->nb_side_data);
@@ -2256,8 +2257,7 @@ static int ifilter_parameters_from_frame(InputFilter *ifilter, const AVFrame *fr
     for (int i = 0; i < frame->nb_side_data; i++) {
         const AVSideDataDescriptor *desc = av_frame_side_data_desc(frame->side_data[i]->type);
 
-        if (!(desc->props & AV_SIDE_DATA_PROP_GLOBAL) ||
-            frame->side_data[i]->type == AV_FRAME_DATA_DISPLAYMATRIX)
+        if (!(desc->props & AV_SIDE_DATA_PROP_GLOBAL))
             continue;
 
         ret = av_frame_side_data_clone(&ifp->side_data,
@@ -2268,8 +2268,11 @@ static int ifilter_parameters_from_frame(InputFilter *ifilter, const AVFrame *fr
     }
 
     sd = av_frame_get_side_data(frame, AV_FRAME_DATA_DISPLAYMATRIX);
-    if (sd)
+    if (sd) {
         memcpy(ifp->displaymatrix, sd->data, sizeof(ifp->displaymatrix));
+        if (ifp->opts.flags & IFILTER_FLAG_AUTOROTATE)
+            av_frame_side_data_remove(&ifp->side_data, &ifp->nb_side_data, AV_FRAME_DATA_DISPLAYMATRIX);
+    }
     ifp->displaymatrix_present = !!sd;
 
     /* Copy downmix related side data to InputFilterPriv so it may be propagated

@@ -25,11 +25,11 @@
 #include "libavutil/mem.h"
 #include "libavutil/stereo3d.h"
 
-#include "decode.h"
+#include "libavcodec/decode.h"
 #include "hevc.h"
 #include "hevcdec.h"
-#include "progressframe.h"
-#include "thread.h"
+#include "libavcodec/progressframe.h"
+#include "libavcodec/thread.h"
 #include "libavutil/refstruct.h"
 
 void ff_hevc_unref_frame(HEVCFrame *frame, int flags)
@@ -122,10 +122,9 @@ static HEVCFrame *alloc_frame(HEVCContext *s, HEVCLayerContext *l)
             return NULL;
 
         // Add LCEVC SEI metadata here, as it's needed in get_buffer()
-        if (s->sei.common.lcevc.info) {
-            HEVCSEILCEVC *lcevc = &s->sei.common.lcevc;
+        if (s->sei.common.itut_t35.lcevc) {
             ret = ff_frame_new_side_data_from_buf(s->avctx, frame->tf.f,
-                                                  AV_FRAME_DATA_LCEVC, &lcevc->info);
+                                                  AV_FRAME_DATA_LCEVC, &s->sei.common.itut_t35.lcevc);
             if (ret < 0)
                 goto fail;
         }
