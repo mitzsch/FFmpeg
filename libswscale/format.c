@@ -939,14 +939,15 @@ static int test_format_ops(enum AVPixelFormat format, int output)
     return ret == 0;
 }
 
-static SwsSwizzleOp swizzle_inv(SwsSwizzleOp swiz) {
+static void swizzle_inv(SwsSwizzleOp *swiz)
+{
     /* Input[x] =: Output[swizzle.x] */
-    unsigned out[4];
-    out[swiz.x] = 0;
-    out[swiz.y] = 1;
-    out[swiz.z] = 2;
-    out[swiz.w] = 3;
-    return (SwsSwizzleOp) {{ .x = out[0], out[1], out[2], out[3] }};
+    unsigned tmp[4];
+    tmp[swiz->x] = 0;
+    tmp[swiz->y] = 1;
+    tmp[swiz->z] = 2;
+    tmp[swiz->w] = 3;
+    *swiz = (SwsSwizzleOp) {{ .x = tmp[0], tmp[1], tmp[2], tmp[3] }};
 }
 
 /**
@@ -996,7 +997,7 @@ int ff_sws_decode_pixfmt(SwsOpList *ops, enum AVPixelFormat fmt)
     RET(fmt_analyze(fmt, &rw_op, &unpack, &swizzle, &shift,
                     &pixel_type, &raw_type));
 
-    swizzle = swizzle_inv(swizzle);
+    swizzle_inv(&swizzle);
 
     /* Set baseline pixel content flags */
     const int integer = ff_sws_pixel_type_is_int(raw_type);
@@ -1203,7 +1204,7 @@ static SwsLinearOp fmt_encode_range(const SwsFormat *fmt, bool *incomplete)
         c.m[0][0] = av_neg_q(c.m[0][0]);
     }
 
-    c.mask = ff_sws_linear_mask(c);
+    c.mask = ff_sws_linear_mask(&c);
     return c;
 }
 
@@ -1222,7 +1223,7 @@ static SwsLinearOp fmt_decode_range(const SwsFormat *fmt, bool *incomplete)
     if (!(fmt->desc->flags & AV_PIX_FMT_FLAG_ALPHA))
         c.m[3][4] = Q1;
 
-    c.mask = ff_sws_linear_mask(c);
+    c.mask = ff_sws_linear_mask(&c);
     return c;
 }
 
@@ -1388,7 +1389,7 @@ linear_mat3(const AVRational m00, const AVRational m01, const AVRational m02,
         {  Q0,  Q0,  Q0, Q1, Q0 },
     }};
 
-    c.mask = ff_sws_linear_mask(c);
+    c.mask = ff_sws_linear_mask(&c);
     return c;
 }
 

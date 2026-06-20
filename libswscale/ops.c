@@ -144,11 +144,11 @@ SwsCompMask ff_sws_comp_mask_q4(const AVRational q[4])
     return mask;
 }
 
-SwsCompMask ff_sws_comp_mask_swizzle(const SwsCompMask mask, const SwsSwizzleOp swiz)
+SwsCompMask ff_sws_comp_mask_swizzle(const SwsCompMask mask, const SwsSwizzleOp *swiz)
 {
     SwsCompMask res = 0;
     for (int i = 0; i < 4; i++) {
-        const int src = swiz.in[i];
+        const int src = swiz->in[i];
         if (SWS_COMP_TEST(mask, src))
             res |= SWS_COMP(i);
     }
@@ -773,12 +773,12 @@ int ff_sws_op_list_max_size(const SwsOpList *ops)
     return max_size;
 }
 
-uint32_t ff_sws_linear_mask(const SwsLinearOp c)
+uint32_t ff_sws_linear_mask(const SwsLinearOp *c)
 {
     uint32_t mask = 0;
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < 5; j++) {
-            if (av_cmp_q(c.m[i][j], Q(i == j)))
+            if (av_cmp_q(c->m[i][j], Q(i == j)))
                 mask |= SWS_MASK(i, j);
         }
     }
