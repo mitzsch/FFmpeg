@@ -104,7 +104,6 @@ typedef struct IEC61937Context {
     int dtshd_fallback;
 #define SPDIF_FLAG_BIGENDIAN    0x01
     int spdif_flags;
-    int reset_requested;
 
     /// function, which generates codec dependent header information.
     /// Sets data_type and pkt_offset, and length_code, out_bytes, out_buf if necessary
@@ -116,7 +115,6 @@ static const AVOption options[] = {
 { "be", "output in big-endian format (for use as s16be)", 0, AV_OPT_TYPE_CONST, {.i64 = SPDIF_FLAG_BIGENDIAN},  0, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM, .unit = "spdif_flags" },
 { "dtshd_rate", "mux complete DTS frames in HD mode at the specified IEC958 rate (in Hz, default 0=disabled)", offsetof(IEC61937Context, dtshd_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 768000, AV_OPT_FLAG_ENCODING_PARAM },
 { "dtshd_fallback_time", "min secs to strip HD for after an overflow (-1: till the end, default 60)", offsetof(IEC61937Context, dtshd_fallback), AV_OPT_TYPE_INT, {.i64 = 60}, -1, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM },
-{ "reset", "request one-shot muxer state reset before processing the next packet", offsetof(IEC61937Context, reset_requested), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_ENCODING_PARAM | AV_OPT_FLAG_RUNTIME_PARAM },
 { NULL },
 };
 
@@ -126,29 +124,6 @@ static const AVClass spdif_class = {
     .option         = options,
     .version        = LIBAVUTIL_VERSION_INT,
 };
-
-static void spdif_reset_state(AVFormatContext *s)
-{
-    IEC61937Context *ctx = s->priv_data;
-
-    ctx->hd_buf_count = 0;
-    ctx->hd_buf_filled = 0;
-    ctx->hd_buf_idx = 0;
-    ctx->hd_buf_next_ready_idx = 0;
-    ctx->hd_buf_ready_count = 0;
-    ctx->dtshd_skip = 0;
-
-    ctx->truehd_prev_time = 0;
-    ctx->truehd_prev_size = 0;
-    ctx->truehd_output_timing = 0;
-    ctx->truehd_output_timing_valid = 0;
-    ctx->truehd_oi_delta = 0;
-
-    ctx->out_buf = NULL;
-    ctx->out_bytes = 0;
-    ctx->length_code = 0;
-    ctx->pkt_offset = 0;
-}
 
 static int spdif_header_ac3(AVFormatContext *s, AVPacket *pkt)
 {
@@ -611,6 +586,9 @@ static int spdif_header_truehd(AVFormatContext *s, AVPacket *pkt)
     int next_code_idx;
     int ret;
 
+    if (pkt->size < 10)
+        return AVERROR_INVALIDDATA;
+
     ret = truehd_parse_access_unit(pkt->data, pkt->size, &au);
     if (ret < 0)
         return ret;
@@ -867,11 +845,6 @@ static int spdif_write_packet(struct AVFormatContext *s, AVPacket *pkt)
 {
     IEC61937Context *ctx = s->priv_data;
     int ret, padding;
-
-    if (ctx->reset_requested) {
-        spdif_reset_state(s);
-        ctx->reset_requested = 0;
-    }
 
     ctx->out_buf = pkt->data;
     ctx->out_bytes = pkt->size;
