@@ -1,4 +1,6 @@
 /*
+ * Copyright (C) 2026 Ramiro Polla <ramiro.polla@gmail.com>
+ *
  * This file is part of FFmpeg.
  *
  * FFmpeg is free software; you can redistribute it and/or
@@ -16,4 +18,18 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "libavutil/vulkan_glslang.c"
+#ifndef SWSCALE_JIT_H
+#define SWSCALE_JIT_H
+
+#include <stddef.h>
+
+/* Allocate size bytes of writable memory for JIT code generation. */
+void *ff_sws_jit_alloc(size_t size);
+
+/* Protect JIT memory from further writes. */
+int ff_sws_jit_protect(void *ptr, size_t size);
+
+/* Free memory allocated by ff_sws_jit_alloc(). */
+void ff_sws_jit_free(void *ptr, size_t size);
+
+#endif /* SWSCALE_JIT_H */
