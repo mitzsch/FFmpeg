@@ -516,6 +516,7 @@ static void dnn_free_model_ov(DNNModel **model)
         return;
 
     ov_model = (OVModel *)(*model);
+    ff_dnn_wait_requests(ov_model->request_queue, ov_model->ctx->nireq);
     while (ff_safe_queue_size(ov_model->request_queue) != 0) {
         OVRequestItem *item = ff_safe_queue_pop_front(ov_model->request_queue);
         if (item && item->infer_request) {
@@ -1087,15 +1088,19 @@ static int get_input_ov(DNNModel *model, DNNData *input, const char *input_name)
     }
     for (int i = 0; i < 4; i++)
         input->dims[i] = input_shape.dims[i];
+
+    if (ctx->ov_option.layout == DL_NONE) {
+        if (input_shape.dims[1] <= 3)
+            ctx->ov_option.layout = DL_NCHW;
+        else
+            ctx->ov_option.layout = DL_NHWC;
+    }
+    input->layout = ctx->ov_option.layout;
+
     if (input_resizable) {
         input->dims[dnn_get_width_idx_by_layout(input->layout)] = -1;
         input->dims[dnn_get_height_idx_by_layout(input->layout)] = -1;
     }
-
-    if (input_shape.dims[1] <= 3) // NCHW
-        input->layout = DL_NCHW;
-    else // NHWC
-        input->layout = DL_NHWC;
 
     input->dt       = precision_to_datatype(precision);
     ov_shape_free(&input_shape);

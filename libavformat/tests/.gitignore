@@ -2,10 +2,12 @@
 /fifo_muxer
 /imf
 /mkdir
-/movenc
 /noproxy
+/rename
 /rtmpdh
 /seek
 /srtp
 /url
 /seek_utils
+/http
+/ogg_pages

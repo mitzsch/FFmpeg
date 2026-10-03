@@ -77,6 +77,7 @@ static bool op_commute_clear(SwsOp *op, SwsOp *next)
     case SWS_OP_PACK:
     case SWS_OP_UNPACK:
     case SWS_OP_CLEAR:
+    case SWS_OP_LUT_3D:
         return false;
     case SWS_OP_TYPE_NB:
         break;
@@ -127,7 +128,7 @@ static bool op_commute_swizzle(SwsOp *op, SwsOp *next)
             if (!SWS_OP_NEEDED(op, i))
                 continue;
             const int j = op->swizzle.in[i];
-            if (seen[j] && av_cmp_q64(next->clamp.limit[j], c.limit[i]))
+            if (seen[j] && ff_cmp_q64(next->clamp.limit[j], c.limit[i]))
                 return false;
             next->clamp.limit[j] = c.limit[i];
             seen[j] = true;
@@ -157,6 +158,7 @@ static bool op_commute_swizzle(SwsOp *op, SwsOp *next)
     case SWS_OP_LINEAR:
     case SWS_OP_PACK:
     case SWS_OP_UNPACK:
+    case SWS_OP_LUT_3D:
         return false;
     case SWS_OP_TYPE_NB:
         break;
@@ -198,6 +200,7 @@ static bool op_commute_filter(SwsOp *op, SwsOp *prev)
     case SWS_OP_MAX:
     case SWS_OP_FILTER_H:
     case SWS_OP_FILTER_V:
+    case SWS_OP_LUT_3D:
         return false;
     case SWS_OP_TYPE_NB:
         break;
@@ -238,7 +241,7 @@ static bool extract_scalar(const SwsLinearOp *c,
     SwsScaleOp scale = {0};
 
     /* There are components not on the main diagonal */
-    if (c->mask & ~SWS_MASK_DIAG4)
+    if (ff_sws_linear_mask(c) & ~SWS_MASK_DIAG4)
         return false;
 
     for (int i = 0; i < 4; i++) {
@@ -246,7 +249,7 @@ static bool extract_scalar(const SwsLinearOp *c,
         if ((prev->flags[i]  & SWS_COMP_ZERO) ||
             (comps->flags[i] & SWS_COMP_GARBAGE))
             continue;
-        if (scale.factor.den && av_cmp_q64(s, scale.factor))
+        if (scale.factor.den && ff_cmp_q64(s, scale.factor))
             return false;
         scale.factor = s;
     }
@@ -260,6 +263,7 @@ static bool extract_scalar(const SwsLinearOp *c,
 static bool extract_constant_rows(SwsLinearOp *c, const SwsComps *prev,
                                   SwsClearOp *out_clear)
 {
+    const uint32_t mask = ff_sws_linear_mask(c);
     SwsClearOp clear = {0};
     bool ret = false;
 
@@ -269,12 +273,11 @@ static bool extract_constant_rows(SwsLinearOp *c, const SwsComps *prev,
             const_row &= c->m[i][j].num == 0 || /* scalar is zero */
                          (prev->flags[j] & SWS_COMP_ZERO); /* input is zero */
         }
-        if (const_row && (c->mask & SWS_MASK_ROW(i))) {
+        if (const_row && (mask & SWS_MASK_ROW(i))) {
             clear.mask |= SWS_COMP(i);
             clear.value[i] = c->m[i][4];
             for (int j = 0; j < 5; j++)
                 c->m[i][j] = Q(i == j);
-            c->mask &= ~SWS_MASK_ROW(i);
             ret = true;
         }
     }
@@ -321,7 +324,6 @@ static bool extract_swizzle(SwsLinearOp *op, const SwsComps *prev,
     if (swiz.mask == SWS_SWIZZLE(0, 1, 2, 3).mask)
         return false; /* no swizzle was identified */
 
-    c.mask = ff_sws_linear_mask(&c);
     *out_swiz = swiz;
     *op = c;
     return true;
@@ -359,7 +361,7 @@ retry:
             }
 
             /* Merge filter with prior conversion */
-            if (prev->op == SWS_OP_CONVERT && !prev->convert.expand) {
+            if (prev->op == SWS_OP_CONVERT) {
                 int size_from = ff_sws_pixel_type_size(prev->type);
                 int size_to   = ff_sws_pixel_type_size(op->type);
                 av_assert1(prev->convert.to == op->type);
@@ -491,6 +493,24 @@ retry:
                 ff_sws_op_list_remove_at(ops, n + 1, 1);
                 goto retry;
             }
+
+            /* Fold into linear op */
+            if (next->op == SWS_OP_LINEAR) {
+                for (int j = 0; j < 4; j++) {
+                    if (!SWS_COMP_TEST(op->clear.mask, j))
+                        continue;
+
+                    const AVRational64 x = op->clear.value[j];
+                    for (int i = 0; i < 4; i++) {
+                        const AVRational64 kx = ff_mul_q64(next->lin.m[i][j], x);
+                        next->lin.m[i][4] = ff_add_q64(next->lin.m[i][4], kx);
+                        next->lin.m[i][j] = Q(0);
+                    }
+                }
+
+                ff_sws_op_list_remove_at(ops, n, 1);
+                goto retry;
+            }
             break;
 
         case SWS_OP_SWIZZLE:
@@ -553,23 +573,9 @@ retry:
             }
 
             /* Transitive conversion */
-            if (next->op == SWS_OP_CONVERT &&
-                op->convert.expand == next->convert.expand)
-            {
+            if (next->op == SWS_OP_CONVERT) {
                 av_assert1(op->convert.to == next->type);
                 op->convert.to = next->convert.to;
-                ff_sws_op_list_remove_at(ops, n + 1, 1);
-                goto retry;
-            }
-
-            /* Conversion followed by integer expansion */
-            if (next->op == SWS_OP_SCALE && !op->convert.expand &&
-                ff_sws_pixel_type_is_int(op->type) &&
-                ff_sws_pixel_type_is_int(op->convert.to) &&
-                !av_cmp_q64(next->scale.factor,
-                            ff_sws_pixel_expand(op->type, op->convert.to)))
-            {
-                op->convert.expand = true;
                 ff_sws_op_list_remove_at(ops, n + 1, 1);
                 goto retry;
             }
@@ -579,7 +585,9 @@ retry:
             for (int i = 0; i < 4; i++) {
                 if (!SWS_OP_NEEDED(op, i) || !op->clamp.limit[i].den)
                     continue;
-                if (av_cmp_q64(op->clamp.limit[i], prev->comps.max[i]) < 0)
+                if (ff_cmp_q64(op->clamp.limit[i], prev->comps.max[i]) >= 0)
+                    op->clamp.limit[i] = (AVRational64) {0}; /* no-op */
+                else
                     noop = false;
             }
 
@@ -593,7 +601,9 @@ retry:
             for (int i = 0; i < 4; i++) {
                 if (!SWS_OP_NEEDED(op, i) || !op->clamp.limit[i].den)
                     continue;
-                if (av_cmp_q64(prev->comps.min[i], op->clamp.limit[i]) < 0)
+                if (ff_cmp_q64(prev->comps.min[i], op->clamp.limit[i]) >= 0)
+                    op->clamp.limit[i] = (AVRational64) {0};
+                else
                     noop = false;
             }
 
@@ -622,12 +632,13 @@ retry:
             break;
 
         case SWS_OP_LINEAR: {
+            const uint32_t mask = ff_sws_linear_mask(&op->lin);
             SwsSwizzleOp swizzle;
             SwsClearOp clear;
             SwsScaleOp scale;
 
             /* No-op (identity) linear operation */
-            if (!op->lin.mask) {
+            if (!mask) {
                 ff_sws_op_list_remove_at(ops, n, 1);
                 goto retry;
             }
@@ -640,13 +651,12 @@ retry:
                     for (int j = 0; j < 5; j++) {
                         AVRational64 sum = Q(0);
                         for (int k = 0; k < 4; k++)
-                            sum = av_add_q64(sum, av_mul_q64(m2.m[i][k], m1.m[k][j]));
+                            sum = ff_add_q64(sum, ff_mul_q64(m2.m[i][k], m1.m[k][j]));
                         if (j == 4) /* m1.m[4][j] == 1 */
-                            sum = av_add_q64(sum, m2.m[i][4]);
+                            sum = ff_add_q64(sum, m2.m[i][4]);
                         op->lin.m[i][j] = sum;
                     }
                 }
-                op->lin.mask = ff_sws_linear_mask(&op->lin);
                 ff_sws_op_list_remove_at(ops, n + 1, 1);
                 goto retry;
             }
@@ -654,22 +664,20 @@ retry:
             /* Optimize away zero columns */
             for (int j = 0; j < 4; j++) {
                 const uint32_t col = SWS_MASK_COL(j);
-                if (!(prev->comps.flags[j] & SWS_COMP_ZERO) || !(op->lin.mask & col))
+                if (!(prev->comps.flags[j] & SWS_COMP_ZERO) || !(mask & col))
                     continue;
                 for (int i = 0; i < 4; i++)
                     op->lin.m[i][j] = Q(i == j);
-                op->lin.mask &= ~col;
                 goto retry;
             }
 
             /* Optimize away unused rows */
             for (int i = 0; i < 4; i++) {
                 const uint32_t row = SWS_MASK_ROW(i);
-                if (SWS_OP_NEEDED(op, i) || !(op->lin.mask & row))
+                if (SWS_OP_NEEDED(op, i) || !(mask & row))
                     continue;
                 for (int j = 0; j < 5; j++)
                     op->lin.m[i][j] = Q(i == j);
-                op->lin.mask &= ~row;
                 goto retry;
             }
 
@@ -714,7 +722,7 @@ retry:
 
             /* Merge consecutive scaling operations */
             if (next->op == SWS_OP_SCALE) {
-                op->scale.factor = av_mul_q64(op->scale.factor, next->scale.factor);
+                op->scale.factor = ff_mul_q64(op->scale.factor, next->scale.factor);
                 ff_sws_op_list_remove_at(ops, n + 1, 1);
                 goto retry;
             }
@@ -736,6 +744,14 @@ retry:
                 prev->rw.filter.op = op->op;
                 prev->rw.filter.kernel = av_refstruct_ref(op->filter.kernel);
                 prev->rw.filter.type = op->filter.type;
+                ff_sws_op_list_remove_at(ops, n, 1);
+                goto retry;
+            }
+            break;
+
+        case SWS_OP_LUT_3D:
+            /* Eliminate unnecessary 3DLUT */
+            if (!(needed & SWS_COMP_ELEMS(3))) {
                 ff_sws_op_list_remove_at(ops, n, 1);
                 goto retry;
             }
@@ -778,6 +794,18 @@ retry:
         case SWS_OP_SCALE:
             /* Exact integer multiplication */
             if (op->scale.factor.den == 1 && next->op == SWS_OP_CONVERT &&
+                ff_sws_pixel_type_is_int(next->convert.to) &&
+                op_result_is_exact(op))
+            {
+                op->type = next->convert.to;
+                FFSWAP(SwsOp, *op, *next);
+                goto retry;
+            }
+            break;
+
+        case SWS_OP_LINEAR:
+            /* Exact integer linear transformation */
+            if (next->op == SWS_OP_CONVERT &&
                 ff_sws_pixel_type_is_int(next->convert.to) &&
                 op_result_is_exact(op))
             {
@@ -1013,8 +1041,59 @@ static int solve_shuffle(const SwsUOpList *const uops, SwsUOp *out)
     return AVERROR(EINVAL);
 }
 
+/* Only checks exact integer scale ops */
+static bool is_scale(const SwsUOp *op, int64_t val)
+{
+    if (op->uop != SWS_UOP_SCALE)
+        return false;
+
+    switch (op->type) {
+    case SWS_PIXEL_U8:  return op->data.scalar.u8  == val;
+    case SWS_PIXEL_U16: return op->data.scalar.u16 == val;
+    case SWS_PIXEL_U32: return op->data.scalar.u32 == val;
+    default: return false;
+    }
+}
+
 int ff_sws_uop_list_optimize(SwsContext *ctx, SwsUOpFlags flags, SwsUOpList *uops)
 {
+    static const SwsUOp dummy = {0};
+
+retry:
+    for (int i = 0; i < uops->num_ops; i++) {
+        const SwsUOp *next = i < uops->num_ops - 1 ? &uops->ops[i + 1] : &dummy;
+        SwsUOp *op = &uops->ops[i];
+
+        switch (op->uop) {
+        case SWS_UOP_TO_U16:
+            if (ff_sws_pixel_type_is_int(op->type) && is_scale(next, 0x101)) {
+                op->uop = SWS_UOP_EXPAND_PAIR;
+                ff_sws_uop_list_remove_at(uops, i + 1, 1);
+                goto retry;
+            }
+            break;
+
+        case SWS_UOP_TO_U32:
+            if (ff_sws_pixel_type_is_int(op->type) && is_scale(next, 0x1010101)) {
+                op->uop = SWS_UOP_EXPAND_QUAD;
+                ff_sws_uop_list_remove_at(uops, i + 1, 1);
+                goto retry;
+            }
+            break;
+
+        case SWS_UOP_SCALE:
+            if (flags & SWS_UOP_FLAG_EXPAND_BIT) {
+                const int bits = 8 * ff_sws_pixel_type_size(op->type);
+                if (is_scale(op, UINT64_MAX >> (64 - bits))) {
+                    op->uop = SWS_UOP_EXPAND_BIT;
+                    memset(&op->par, 0, sizeof(op->par));
+                    goto retry;
+                }
+            }
+            break;
+        }
+    }
+
     /* Try promoting the entire uop list to a packed shuffle operation */
     if (flags & SWS_UOP_FLAG_PSHUFB) {
         SwsUOp shuffle;
@@ -1026,20 +1105,6 @@ int ff_sws_uop_list_optimize(SwsContext *ctx, SwsUOpFlags flags, SwsUOpList *uop
             return ret;
         }
     }
-
-#if 0
-    static const SwsUOp dummy = {0};
-
-retry:
-    for (int i = 0; i < uops->num_ops; i++) {
-        const SwsUOp *next = i < uops->num_ops - 1 ? &uops->ops[i + 1] : &dummy;
-        SwsUOp *op = &uops->ops[i];
-
-        switch (op->uop) {
-            /* placeholder */
-        }
-    }
-#endif
 
     return 0;
 }

@@ -34,7 +34,6 @@
 #include "libavutil/emms.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/intreadwrite.h"
-#include "libavutil/libm.h"
 #include "libavutil/mathematics.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
@@ -92,6 +91,19 @@ static SwsContext *alloc_set_opts(int srcW, int srcH, enum AVPixelFormat srcForm
         sws->scaler_params[i] = param[i];
 
     return sws;
+}
+
+static void set_cascade_chr_pos(SwsContext *cascade, const SwsContext *sws,
+                                int src, int dst)
+{
+    if (src) {
+        cascade->src_h_chr_pos = sws->src_h_chr_pos;
+        cascade->src_v_chr_pos = sws->src_v_chr_pos;
+    }
+    if (dst) {
+        cascade->dst_h_chr_pos = sws->dst_h_chr_pos;
+        cascade->dst_v_chr_pos = sws->dst_v_chr_pos;
+    }
 }
 
 int ff_shuffle_filter_coefficients(SwsInternal *c, int *filterPos,
@@ -172,6 +184,11 @@ static av_cold int get_local_pos(SwsInternal *s, int chr_subsample, int pos, int
     }
     pos += 128; // relative to ideal left edge
     return pos >> chr_subsample;
+}
+
+static av_cold int get_center_offset(SwsInternal *s, int chr_subsample, int pos, int dir)
+{
+    return (get_local_pos(s, chr_subsample, pos, dir) - 128) * (1 << chr_subsample);
 }
 
 typedef struct {
@@ -939,7 +956,7 @@ int sws_setColorspaceDetails(SwsContext *sws, const int inv_table[4],
                 }
             }
 
-            if (srcW*srcH > dstW*dstH) {
+            if (srcW*(int64_t)srcH > dstW*(int64_t)dstH) {
                 tmp_width  = dstW;
                 tmp_height = dstH;
             } else {
@@ -959,6 +976,7 @@ int sws_setColorspaceDetails(SwsContext *sws, const int inv_table[4],
                 return -1;
 
             c->cascaded_context[0]->alpha_blend = sws->alpha_blend;
+            set_cascade_chr_pos(c->cascaded_context[0], sws, 1, 0);
             ret = sws_init_context(c->cascaded_context[0], NULL , NULL);
             if (ret < 0)
                 return ret;
@@ -974,6 +992,7 @@ int sws_setColorspaceDetails(SwsContext *sws, const int inv_table[4],
                 return -1;
             c->cascaded_context[1]->src_range = srcRange;
             c->cascaded_context[1]->dst_range = dstRange;
+            set_cascade_chr_pos(c->cascaded_context[1], sws, 0, 1);
             ret = sws_init_context(c->cascaded_context[1], NULL , NULL);
             if (ret < 0)
                 return ret;
@@ -1222,7 +1241,8 @@ av_cold int ff_sws_init_single_context(SwsContext *sws, SwsFilter *srcFilter,
     }
 
     if (i == SWS_FAST_BILINEAR) {
-        if (srcW < 8 || dstW <= 8) {
+        /* the fast bilinear scalers keep the source position in 16.16 fixed point */
+        if (srcW < 8 || dstW <= 8 || srcW >= 65536) {
             i = SWS_BILINEAR;
             flags ^= SWS_FAST_BILINEAR | i;
             sws->flags = flags;
@@ -1232,6 +1252,9 @@ av_cold int ff_sws_init_single_context(SwsContext *sws, SwsFilter *srcFilter,
     SwsScaler scaler_sub = sws->scaler_sub ? sws->scaler_sub : sws->scaler;
     int lum_scaler = scaler_flag(sws->scaler, i == SWS_BICUBLIN ? SWS_BICUBIC  : i);
     int chr_scaler = scaler_flag(scaler_sub,  i == SWS_BICUBLIN ? SWS_BILINEAR : i);
+    const int info_scaler = sws->scaler == SWS_SCALE_AUTO &&
+                            i == SWS_BICUBLIN &&
+                            chr_scaler == SWS_BILINEAR ? i : lum_scaler;
 
     /* sanity check */
     if (srcW < 1 || srcH < 1 || dstW < 1 || dstH < 1) {
@@ -1241,6 +1264,12 @@ av_cold int ff_sws_init_single_context(SwsContext *sws, SwsFilter *srcFilter,
                srcW, srcH, dstW, dstH);
         return AVERROR(EINVAL);
     }
+
+    ret = av_image_check_size2(srcW, srcH, INT64_MAX, AV_PIX_FMT_NONE, 0, c);
+    if (ret >= 0)
+        ret = av_image_check_size2(dstW, dstH, INT64_MAX, AV_PIX_FMT_NONE, 0, c);
+    if (ret < 0)
+        return ret;
 
     if (!dstFilter)
         dstFilter = &dummyFilter;
@@ -1437,8 +1466,8 @@ av_cold int ff_sws_init_single_context(SwsContext *sws, SwsFilter *srcFilter,
      * some special code for the first and last pixel */
     if (flags & SWS_FAST_BILINEAR) {
         if (c->canMMXEXTBeUsed) {
-            lumXInc += 20;
-            chrXInc += 20;
+            lumXInc += 1;
+            chrXInc += 1;
         }
         // we don't use the x86 asm scaler if MMX is available
         else if (INLINE_MMX(cpu_flags) && c->dstBpc <= 14) {
@@ -1471,13 +1500,15 @@ av_cold int ff_sws_init_single_context(SwsContext *sws, SwsFilter *srcFilter,
         if (ret < 0)
             return ret;
 
-        c->cascaded_context[0] = sws_getContext(srcW, srcH, srcFormat,
+        c->cascaded_context[0] = alloc_set_opts(srcW, srcH, srcFormat,
                                                 srcW, srcH, tmpFmt,
-                                                flags, NULL, NULL,
-                                                sws->scaler_params);
-        if (!c->cascaded_context[0]) {
+                                                flags, sws->scaler_params);
+        if (!c->cascaded_context[0])
             return AVERROR(ENOMEM);
-        }
+        set_cascade_chr_pos(c->cascaded_context[0], sws, 1, 0);
+        ret = sws_init_context(c->cascaded_context[0], NULL, NULL);
+        if (ret < 0)
+            return ret;
 
         c->cascaded_context[1] = sws_getContext(srcW, srcH, tmpFmt,
                                                 dstW, dstH, tmpFmt,
@@ -1511,15 +1542,27 @@ av_cold int ff_sws_init_single_context(SwsContext *sws, SwsFilter *srcFilter,
             if (ret < 0)
                 return ret;
 
-            c->cascaded_context[2] = sws_getContext(dstW, dstH, tmpFmt,
+            c->cascaded_context[2] = alloc_set_opts(dstW, dstH, tmpFmt,
                                                     dstW, dstH, dstFormat,
-                                                    flags, NULL, NULL,
-                                                    sws->scaler_params);
+                                                    flags, sws->scaler_params);
             if (!c->cascaded_context[2])
                 return AVERROR(ENOMEM);
+            set_cascade_chr_pos(c->cascaded_context[2], sws, 0, 1);
+            ret = sws_init_context(c->cascaded_context[2], NULL, NULL);
+            if (ret < 0)
+                return ret;
         }
         return 0;
     }
+
+    if (!isGray(srcFormat) &&
+        ((desc_dst->log2_chroma_w &&
+          get_center_offset(c, desc_src->log2_chroma_w, sws->src_h_chr_pos, 0) !=
+          get_center_offset(c, desc_dst->log2_chroma_w, sws->dst_h_chr_pos, 0)) ||
+         (desc_dst->log2_chroma_h &&
+          get_center_offset(c, desc_src->log2_chroma_h, sws->src_v_chr_pos, 1) !=
+          get_center_offset(c, desc_dst->log2_chroma_h, sws->dst_v_chr_pos, 1))))
+        unscaled = 0;
 
     if (isBayer(srcFormat)) {
         if (!unscaled ||
@@ -1539,12 +1582,15 @@ av_cold int ff_sws_init_single_context(SwsContext *sws, SwsFilter *srcFilter,
             if (!c->cascaded_context[0])
                 return AVERROR(ENOMEM);
 
-            c->cascaded_context[1] = sws_getContext(srcW, srcH, tmpFormat,
+            c->cascaded_context[1] = alloc_set_opts(srcW, srcH, tmpFormat,
                                                     dstW, dstH, dstFormat,
-                                                    flags, NULL, dstFilter,
-                                                    sws->scaler_params);
+                                                    flags, sws->scaler_params);
             if (!c->cascaded_context[1])
                 return AVERROR(ENOMEM);
+            set_cascade_chr_pos(c->cascaded_context[1], sws, 0, 1);
+            ret = sws_init_context(c->cascaded_context[1], NULL, dstFilter);
+            if (ret < 0)
+                return ret;
             return 0;
         }
     }
@@ -1595,6 +1641,7 @@ av_cold int ff_sws_init_single_context(SwsContext *sws, SwsFilter *srcFilter,
 
                 c->cascaded_context[1]->src_range = sws->src_range;
                 c->cascaded_context[1]->dst_range = sws->dst_range;
+                set_cascade_chr_pos(c->cascaded_context[1], sws, 1, 1);
                 ret = sws_init_context(c->cascaded_context[1], srcFilter , dstFilter);
                 if (ret < 0)
                     return ret;
@@ -1757,7 +1804,7 @@ av_cold int ff_sws_init_single_context(SwsContext *sws, SwsFilter *srcFilter,
         const char *scaler = NULL, *cpucaps;
 
         for (i = 0; i < FF_ARRAY_ELEMS(scale_algorithms); i++) {
-            if (flags & scale_algorithms[i].flag) {
+            if (info_scaler == scale_algorithms[i].flag) {
                 scaler = scale_algorithms[i].description;
                 break;
             }
@@ -1816,19 +1863,25 @@ fail: // FIXME replace things by appropriate error codes
         if (ret < 0)
             return ret;
 
-        c->cascaded_context[0] = sws_getContext(srcW, srcH, srcFormat,
+        c->cascaded_context[0] = alloc_set_opts(srcW, srcH, srcFormat,
                                                 tmpW, tmpH, tmpFormat,
-                                                flags, srcFilter, NULL,
-                                                sws->scaler_params);
+                                                flags, sws->scaler_params);
         if (!c->cascaded_context[0])
             return AVERROR(ENOMEM);
+        set_cascade_chr_pos(c->cascaded_context[0], sws, 1, 0);
+        ret = sws_init_context(c->cascaded_context[0], srcFilter, NULL);
+        if (ret < 0)
+            return ret;
 
-        c->cascaded_context[1] = sws_getContext(tmpW, tmpH, tmpFormat,
+        c->cascaded_context[1] = alloc_set_opts(tmpW, tmpH, tmpFormat,
                                                 dstW, dstH, dstFormat,
-                                                flags, NULL, dstFilter,
-                                                sws->scaler_params);
+                                                flags, sws->scaler_params);
         if (!c->cascaded_context[1])
             return AVERROR(ENOMEM);
+        set_cascade_chr_pos(c->cascaded_context[1], sws, 0, 1);
+        ret = sws_init_context(c->cascaded_context[1], NULL, dstFilter);
+        if (ret < 0)
+            return ret;
         return 0;
     }
     return ret;
@@ -1840,8 +1893,8 @@ static int context_init_threaded(SwsContext *sws,
     SwsInternal *c = sws_internal(sws);
     int ret;
 
-    ret = avpriv_slicethread_create(&c->slicethread, (void*) sws,
-                                    ff_sws_slice_worker, NULL, sws->threads);
+    ret = avpriv_slicethread_create2(&c->slicethread, (void*) sws,
+                                     ff_sws_slice_worker, NULL, sws->threads);
     if (ret == AVERROR(ENOSYS)) {
         sws->threads = 1;
         return 0;
@@ -1851,8 +1904,7 @@ static int context_init_threaded(SwsContext *sws,
     sws->threads = ret;
 
     c->slice_ctx = av_calloc(sws->threads, sizeof(*c->slice_ctx));
-    c->slice_err = av_calloc(sws->threads, sizeof(*c->slice_err));
-    if (!c->slice_ctx || !c->slice_err)
+    if (!c->slice_ctx)
         return AVERROR(ENOMEM);
 
     for (int i = 0; i < sws->threads; i++) {
@@ -2264,7 +2316,6 @@ void sws_freeContext(SwsContext *sws)
     for (i = 0; i < c->nb_slice_ctx; i++)
         sws_freeContext(c->slice_ctx[i]);
     av_freep(&c->slice_ctx);
-    av_freep(&c->slice_err);
 
     avpriv_slicethread_free(&c->slicethread);
 
@@ -2441,4 +2492,27 @@ int ff_range_add(RangeList *rl, unsigned int start, unsigned int len)
     }
 
     return 0;
+}
+
+int ff_sws_thread_exec(void *priv,
+                       int (*func)(void *priv, int jobnr, int threadnr, int nb_jobs, int nb_threads),
+                       int nb_threads, int nb_jobs)
+{
+    AVSliceThread *slicethread;
+    int ret = avpriv_slicethread_create2(&slicethread, priv, func, NULL, nb_threads);
+    if (ret == AVERROR(ENOSYS)) {
+        /* Fallback for build configurations without threading */
+        for (int i = 0; i < nb_jobs; i++) {
+            int ret = func(priv, i, 0, nb_jobs, 1);
+            if (ret)
+                return ret;
+        }
+        return 0;
+    } else if (ret < 0) {
+        return ret;
+    }
+
+    ret = avpriv_slicethread_execute2(slicethread, nb_jobs, 0);
+    avpriv_slicethread_free(&slicethread);
+    return ret;
 }
