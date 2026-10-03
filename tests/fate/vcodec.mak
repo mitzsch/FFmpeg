@@ -6,7 +6,7 @@ fate-vsynth%: CODEC = $(word 3, $(subst -, ,$(@)))
 fate-vsynth%: FMT = avi
 fate-vsynth%: DEFAULT_SIZE = -s 352x288
 fate-vsynth3-%: DEFAULT_SIZE = -s $(FATEW)x$(FATEH)
-fate-vsynth%: CMD = enc_dec "rawvideo $(DEFAULT_SIZE) -color_range mpeg -pix_fmt yuv420p $(RAWDECOPTS)" $(SRC) $(FMT) "-c $(CODEC) $(ENCOPTS)" rawvideo "-pix_fmt yuv420p -color_range mpeg -fps_mode passthrough $(DECOPTS)" "" "" ${TWOPASS}
+fate-vsynth%: CMD = enc_dec "rawvideo $(DEFAULT_SIZE) -color_range mpeg -pix_fmt yuv420p -chroma_sample_location center $(RAWDECOPTS)" $(SRC) $(FMT) "-c $(CODEC) $(ENCOPTS)" rawvideo "-pix_fmt yuv420p -color_range mpeg -chroma_sample_location center -fps_mode passthrough $(DECOPTS)" "" "" ${TWOPASS}
 fate-vsynth%: CMP_UNIT = 1
 fate-vsynth%: REF = $(SRC_PATH)/tests/ref/vsynth/$(@:fate-%=%)
 
@@ -263,14 +263,14 @@ fate-vsynth%-mpeg1b:             ENCOPTS = -qscale 8 -bf 3 -ps 200
 fate-vsynth%-mpeg1b:             FMT     = mpeg1video
 
 FATE_MPEG2 := mpeg2                                                     \
-              $(if $(CONFIG_SCALE_FILTER), mpeg2-422)                   \
+             mpeg2-422                                                  \
              mpeg2-idct-int                                             \
              mpeg2-ilace                                                \
              mpeg2-ivlc-qprd                                            \
              mpeg2-thread                                               \
              mpeg2-thread-ivlc
 
-FATE_VCODEC-$(call ENCDEC, MPEG2VIDEO, MPEG2VIDEO MPEGVIDEO) += $(FATE_MPEG2)
+FATE_VCODEC_SCALE-$(call ENCDEC, MPEG2VIDEO, MPEG2VIDEO MPEGVIDEO) += $(FATE_MPEG2)
 
 $(FATE_MPEG2:%=fate-vsynth\%-%): FMT    = mpeg2video
 $(FATE_MPEG2:%=fate-vsynth\%-%): CODEC  = mpeg2video
@@ -309,17 +309,27 @@ FATE_MPEG4_AVI = mpeg4-rc                                               \
                  mpeg4-nr                                               \
                  mpeg4-nsse
 
-FATE_VCODEC-$(call ENCDEC, MPEG4, MP4 MOV) += $(FATE_MPEG4_MP4)
-FATE_VCODEC-$(call ENCDEC, MPEG4, AVI)     += $(FATE_MPEG4_AVI)
+FATE_VCODEC_SCALE-$(call ENCDEC, MPEG4, MP4 MOV) += $(FATE_MPEG4_MP4)
+FATE_VCODEC_SCALE-$(call ENCDEC, MPEG4, AVI)     += $(FATE_MPEG4_AVI)
 
 fate-vsynth%-mpeg4:              ENCOPTS = -qscale 10 -flags +mv4 -mbd bits
 fate-vsynth%-mpeg4:              FMT     = mp4
 
-fate-vsynth%-mpeg4-adap:         ENCOPTS = -b 550k -bf 2 -flags +mv4     \
+MPEG4_ADAP_OPTS                          = -b 550k -bf 2 -flags +mv4     \
                                            -trellis 1 -cmp 1 -subcmp 2   \
                                            -mbd rd -scplx_mask 0.3       \
                                            -mpv_flags +mv0               \
                                            -b_strategy 1 -b_sensitivity 5
+fate-vsynth%-mpeg4-adap:         ENCOPTS = $(MPEG4_ADAP_OPTS)
+
+# This is the same test as fate-vsynth%-mpeg4-adap but with an input padded
+# so the encoder can use it without copy.
+FATE_VCODEC_LAYOUT-$(call ENCDEC, MPEG4, AVI, PAD_FILTER CROP_FILTER SCALE_FILTER) += \
+    fate-vsynth1-mpeg4-layout fate-vsynth1-mpeg4-layout-ref
+fate-vsynth%-mpeg4-layout:       ENCOPTS = -vf pad=384:288:0:0,crop=352:288:0:0 \
+                                           $(MPEG4_ADAP_OPTS)
+fate-vsynth%-mpeg4-layout-ref:   CMD     = sed s/mpeg4-layout/mpeg4-adap/g $(SRC_PATH)/tests/ref/vsynth/$(@:fate-%-ref=%)
+fate-vsynth%-mpeg4-layout-ref:   REF     = $(SRC_PATH)/tests/ref/vsynth/$(@:fate-%-layout-ref=%)-adap
 
 fate-vsynth%-mpeg4-adv:          ENCOPTS = -qscale 9 -flags +mv4+aic       \
                                            -data_partitioning 1 -trellis 1 \
@@ -503,7 +513,8 @@ FATE_VCODEC_SCALE-$(call ENCDEC, ZLIB, AVI) += zlib
 FATE_VCODEC-$(CONFIG_SCALE_FILTER) += $(FATE_VCODEC_SCALE-yes)
 FATE_VCODEC += $(FATE_VCODEC-yes)
 FATE_VCODEC := $(if $(call ENCDEC, RAWVIDEO, RAWVIDEO),$(FATE_VCODEC))
-FATE_VSYNTH1 = $(FATE_VCODEC:%=fate-vsynth1-%)
+FATE_VCODEC_LAYOUT := $(if $(call ENCDEC, RAWVIDEO, RAWVIDEO),$(FATE_VCODEC_LAYOUT-yes))
+FATE_VSYNTH1 = $(FATE_VCODEC:%=fate-vsynth1-%) $(FATE_VCODEC_LAYOUT)
 FATE_VSYNTH2 = $(FATE_VCODEC:%=fate-vsynth2-%)
 FATE_VSYNTH_LENA = $(FATE_VCODEC:%=fate-vsynth_lena-%)
 # Redundant tests because they just resize the input

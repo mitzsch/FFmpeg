@@ -27,13 +27,8 @@
 #include <checkasm/test.h>
 #include <checkasm/utils.h>
 
-#include "config.h"
-#include "libavutil/avstring.h"
 #include "libavutil/cpu.h"
-#include "libavutil/emms.h"
 #include "libavutil/internal.h"
-#include "libavutil/lfg.h"
-#include "libavutil/timer.h"
 
 void checkasm_check_aacencdsp(void);
 void checkasm_check_aacpsdsp(void);
@@ -44,6 +39,7 @@ void checkasm_check_alacdsp(void);
 void checkasm_check_apv_dsp(void);
 void checkasm_check_audiodsp(void);
 void checkasm_check_av_tx(void);
+void checkasm_check_base64(void);
 void checkasm_check_blackdetect(void);
 void checkasm_check_blend(void);
 void checkasm_check_blockdsp(void);
@@ -59,7 +55,6 @@ void checkasm_check_fdctdsp(void);
 void checkasm_check_fixed_dsp(void);
 void checkasm_check_flacdsp(void);
 void checkasm_check_float_dsp(void);
-void checkasm_check_fmtconvert(void);
 void checkasm_check_g722dsp(void);
 void checkasm_check_h263dsp(void);
 void checkasm_check_h264chroma(void);
@@ -93,6 +88,7 @@ void checkasm_check_opusdsp(void);
 void checkasm_check_pixblockdsp(void);
 void checkasm_check_pixelutils(void);
 void checkasm_check_png(void);
+void checkasm_check_proresdsp(void);
 void checkasm_check_qpeldsp(void);
 void checkasm_check_sbcdsp(void);
 void checkasm_check_sbrdsp(void);
@@ -111,6 +107,8 @@ void checkasm_check_sw_yuv2rgb(void);
 void checkasm_check_sw_yuv2yuv(void);
 void checkasm_check_sw_ops(void);
 void checkasm_check_takdsp(void);
+void checkasm_check_ttadsp(void);
+void checkasm_check_ttaencdsp(void);
 void checkasm_check_utvideodsp(void);
 void checkasm_check_v210dec(void);
 void checkasm_check_v210enc(void);
@@ -133,7 +131,10 @@ void checkasm_check_vvc_alf(void);
 void checkasm_check_vvc_mc(void);
 void checkasm_check_vvc_sao(void);
 
-#define rnd checkasm_rand
+void checkasm_uninit_crc(void);
+void checkasm_uninit_tx(void);
+
+#define rnd checkasm_rand_uint32
 #define declare_func_float declare_func
 #define bench(...) checkasm_bench(__VA_ARGS__)
 

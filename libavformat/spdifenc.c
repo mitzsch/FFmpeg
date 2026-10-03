@@ -412,6 +412,7 @@ static int spdif_header_aac(AVFormatContext *s, AVPacket *pkt)
  */
 #define MAT_PKT_OFFSET          61440
 #define MAT_FRAME_SIZE          61424
+#define TRUEHD_NOMINAL_AU_SPACING 2560
 
 static const uint8_t mat_start_code[20] = {
     0x07, 0x9E, 0x00, 0x03, 0x84, 0x01, 0x01, 0x01, 0x80, 0x00, 0x56, 0xA5, 0x3B, 0xF4, 0x81, 0x83,
@@ -560,16 +561,6 @@ static int truehd_parse_access_unit(const uint8_t *au_data, int au_size,
     return 0;
 }
 
-/**
- * Interpret the modulo-2^16 difference of a and b as a signed delta.
- * Only unambiguous when the true delta is < 2^15.
- */
-static int u16_signed_delta(uint16_t a, uint16_t b)
-{
-    int delta = (uint16_t)(a - b);
-    return delta >= 0x8000 ? delta - 0x10000 : delta;
-}
-
 static int spdif_header_truehd(AVFormatContext *s, AVPacket *pkt)
 {
     IEC61937Context *ctx = s->priv_data;
@@ -621,12 +612,13 @@ static int spdif_header_truehd(AVFormatContext *s, AVPacket *pkt)
              * output_timing is always ahead by one frame period, so one period is
              * always subtracted before comparison.
             */
-            int bytes_per_sample = 2560 / ctx->truehd_samples_per_frame;
+            int bytes_per_sample = TRUEHD_NOMINAL_AU_SPACING /
+                                   ctx->truehd_samples_per_frame;
             uint16_t output_timing_minus_spf = au.output_timing -
                                                ctx->truehd_samples_per_frame;
             int previous_oi_delta = ctx->truehd_oi_delta;
-            int current_oi_delta = u16_signed_delta(output_timing_minus_spf,
-                                                    input_timing);
+            int current_oi_delta = (int16_t)(output_timing_minus_spf -
+                                             input_timing);
             int prev_padding = 0;
             int discontinuity_padding = 0;
 
@@ -635,7 +627,7 @@ static int spdif_header_truehd(AVFormatContext *s, AVPacket *pkt)
                                     bytes_per_sample;
 
             if (ctx->truehd_prev_size)
-                prev_padding = 2560 - ctx->truehd_prev_size;
+                prev_padding = TRUEHD_NOMINAL_AU_SPACING - ctx->truehd_prev_size;
 
             padding_remaining = prev_padding + discontinuity_padding;
 
@@ -678,7 +670,8 @@ static int spdif_header_truehd(AVFormatContext *s, AVPacket *pkt)
          *
          * 2560 is divisible by truehd_samples_per_frame.
          */
-        int delta_bytes = delta_samples * 2560 / ctx->truehd_samples_per_frame;
+        int delta_bytes = delta_samples * TRUEHD_NOMINAL_AU_SPACING /
+                          ctx->truehd_samples_per_frame;
 
         /* padding needed before this frame */
         padding_remaining = delta_bytes - ctx->truehd_prev_size;
@@ -697,8 +690,7 @@ static int spdif_header_truehd(AVFormatContext *s, AVPacket *pkt)
     if (ctx->truehd_output_timing_valid) {
         uint16_t output_timing_minus_spf = ctx->truehd_output_timing -
                                            ctx->truehd_samples_per_frame;
-        ctx->truehd_oi_delta = u16_signed_delta(output_timing_minus_spf,
-                                                input_timing);
+        ctx->truehd_oi_delta = (int16_t)(output_timing_minus_spf - input_timing);
     }
 
     for (next_code_idx = 0; next_code_idx < FF_ARRAY_ELEMS(mat_codes); next_code_idx++)

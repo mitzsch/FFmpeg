@@ -39,7 +39,10 @@ static int print_ops(SwsContext *ctx, const SwsOpList *ops, SwsCompiledOp *out)
     if (!uops)
         return AVERROR(ENOMEM);
 
-    int ret = ff_sws_ops_translate(ctx, ops, 0, uops);
+    const SwsUOpFlags flags = SWS_UOP_FLAG_EXPAND_BIT
+                            | SWS_UOP_FLAG_READ_PALETTE
+                            | SWS_UOP_FLAG_ADD;
+    int ret = ff_sws_ops_translate(ctx, ops, flags, uops);
     if (ret == AVERROR(ENOTSUP))
         goto fail;
 
@@ -173,7 +176,7 @@ bad_option:
 
     av_log_set_callback(log_stdout);
 
-    ret = ff_sws_enum_op_lists(ctx, graph, src_fmt, dst_fmt, print_passes);
+    ret = ff_sws_enum_op_lists(ctx, graph, NULL, src_fmt, dst_fmt, print_passes);
     if (ret < 0)
         goto fail;
 

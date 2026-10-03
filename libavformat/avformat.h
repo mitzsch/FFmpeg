@@ -421,7 +421,9 @@ struct AVFrame;
  service_provider -- name of the service provider in broadcasting.
  title        -- name of the work.
  track        -- number of this work in the set, can be in form current/total.
- variant_bitrate -- the total bitrate of the bitrate variant that the current stream is part of
+ variant_bitrate -- the total bitrate of the bitrate variant that the program
+                    represents or that the current stream is part of. On
+                    streams it is only set when unambiguous.
  @endverbatim
  *
  * Look in the examples section for an application example how to use the Metadata API.
@@ -1087,8 +1089,9 @@ typedef struct AVStreamGroupTileGrid {
  * AVStreamGroupLayeredVideo is meant to define the relation between a base
  * layer video stream and a separate enhancement layer stream that together
  * form a single layered video presentation (for example a video stream and a
- * data stream containing LCEVC enhancement layer NALUs, or Dolby Vision
- * Profile 7 dual-layer encoding).
+ * data stream containing LCEVC enhancement layer NALUs, Dolby Vision
+ * Profile 7 dual-layer encoding, or a base rendition accompanied by an
+ * ISO 21496-1 gain map).
  *
  * The enhancement layer stream is identified by @ref el_index.
  */
@@ -1153,6 +1156,7 @@ enum AVStreamGroupParamsType {
     AV_STREAM_GROUP_PARAMS_LCEVC,
     AV_STREAM_GROUP_PARAMS_TREF,
     AV_STREAM_GROUP_PARAMS_DOLBY_VISION,
+    AV_STREAM_GROUP_PARAMS_GAIN_MAP,
 };
 
 struct AVIAMFAudioElement;
@@ -1504,6 +1508,21 @@ typedef struct AVFormatContext {
 #define AVFMT_FLAG_SORT_DTS    0x10000 ///< try to interleave outputted packets by dts (using this flag can slow demuxing down)
 #define AVFMT_FLAG_FAST_SEEK   0x80000 ///< Enable fast, but inaccurate seeks for some formats
 #define AVFMT_FLAG_AUTO_BSF   0x200000 ///< Add bitstream filters as requested by the muxer
+
+#if FF_API_OLD_ID3V2_COMMENT
+/**
+ * Also export ID3v2 COMM frames with a non-empty descriptor under the
+ * descriptor as metadata key, next to the "comment-<descriptor>-<lang>" key.
+ *
+ * Only applies to the ID3v2 tag read as container metadata, not to in-band
+ * or timed ID3 tags.
+ *
+ * @deprecated the bare descriptor key is ambiguous: a descriptor matching a
+ * known tag name (e.g. "album") is written back as that tag. Use the
+ * "comment-<descriptor>-<lang>" key instead.
+ */
+#define AVFMT_FLAG_LEGACY_ID3V2_COMM_KEYS 0x400000
+#endif
 
     /**
      * Maximum number of bytes read from input in order to determine stream
@@ -2795,7 +2814,7 @@ int av_write_uncoded_frame_query(AVFormatContext *s, int stream_index);
  * May only be called after a successful call to avformat_write_header.
  *
  * @param s media file handle
- * @return 0 if OK, AVERROR_xxx on error
+ * @return >=0 if OK, AVERROR_xxx on error
  */
 int av_write_trailer(AVFormatContext *s);
 
