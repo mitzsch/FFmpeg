@@ -181,6 +181,12 @@ FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC FORMAT CONCAT SCALE, LAVFI_INDEV FILE
 fate-filter-lavd-scalenorm: tests/data/filtergraphs/scalenorm
 fate-filter-lavd-scalenorm: CMD = framecrc -f lavfi -graph_file $(TARGET_PATH)/tests/data/filtergraphs/scalenorm -i dummy
 
+FATE_FILTER-$(call FILTERFRAMECRC, COLOR FORMAT SCALE CROP) += fate-filter-scale-fast-bilinear-wide-edge
+fate-filter-scale-fast-bilinear-wide-edge: CMD = framecrc -flags bitexact -lavfi color=c=red:s=40000x1:r=1:d=1,format=yuv444p,scale=40032:1:flags=fast_bilinear,crop=1:1:40031:0 -frames:v 1
+
+FATE_FILTER-$(call FILTERFRAMECRC, NULLSRC GEQ FORMAT SCALE CROP) += fate-filter-scale-fast-bilinear-wide-wrap
+fate-filter-scale-fast-bilinear-wide-wrap: CMD = framecrc -flags bitexact -lavfi 'nullsrc=s=300000x1,geq=lum=X*255/W:cb=128:cr=128,format=gray,scale=300032:1:flags=fast_bilinear,crop=1:1:279000:0' -frames:v 1
+
 FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FEEDBACK HFLIP, LAVFI_INDEV) += fate-filter-feedback-hflip
 fate-filter-feedback-hflip: CMD = framecrc -f lavfi -i testsrc2=d=1 -vf "[in][hflipin]feedback=x=0:y=0:w=100:h=100[out][hflipout];[hflipout]hflip[hflipin]"
 
@@ -218,6 +224,14 @@ $(FATE_FILTER_FRAMEPACK): CMD = framecrc -c:v pgmyuv -i $(TARGET_PATH)/tests/vsy
 FATE_FILTER_VSYNTH_PGMYUV-$(CONFIG_FRAMEPACK_FILTER) += $(FATE_FILTER_FRAMEPACK)
 fate-filter-framepack: $(FATE_FILTER_FRAMEPACK)
 
+FATE_FILTER_GAINMAP_SRC = testsrc2=s=64x48:r=1:d=1,scale,format=gbrpf32,split[b][a];[b]setparams=color_trc=iec61966-2-1:color_primaries=bt709[base];[a]setparams=color_trc=smpte2084:color_primaries=bt2020[alt];[base][alt]
+
+FATE_FILTER-$(call FILTERFRAMECRC, GAINMAP TESTSRC2 FORMAT SETPARAMS SPLIT, SCALE_FILTER) += fate-filter-gainmap fate-filter-gainmap-luma fate-filter-gainmap-maxrgb fate-filter-gainmap-fixed
+fate-filter-gainmap: CMD = framecrc -lavfi "$(FATE_FILTER_GAINMAP_SRC)gainmap,scale" -pix_fmt gbrp
+fate-filter-gainmap-luma: CMD = framecrc -lavfi "$(FATE_FILTER_GAINMAP_SRC)gainmap=mode=luma,scale" -pix_fmt gray
+fate-filter-gainmap-maxrgb: CMD = framecrc -lavfi "$(FATE_FILTER_GAINMAP_SRC)gainmap=mode=maxrgb,scale" -pix_fmt gray
+fate-filter-gainmap-fixed: CMD = framecrc -lavfi "$(FATE_FILTER_GAINMAP_SRC)gainmap=min=0:max=2.3:gamma=1:base_nits=203:alt_nits=1000,scale" -pix_fmt gbrp
+
 FATE_FILTER_VSYNTH_PGMYUV-$(CONFIG_GRADFUN_FILTER) += fate-filter-gradfun
 fate-filter-gradfun: CMD = framecrc -c:v pgmyuv -i $(SRC) -vf gradfun
 
@@ -235,6 +249,9 @@ fate-filter-negate: CMD = framecrc -c:v pgmyuv -i $(SRC) -vf perms=random,negate
 
 FATE_FILTER_VSYNTH_PGMYUV-$(CONFIG_HISTOGRAM_FILTER) += fate-filter-histogram-levels
 fate-filter-histogram-levels: CMD = framecrc -c:v pgmyuv -i $(SRC) -vf histogram -flags +bitexact -sws_flags +accurate_rnd+bitexact
+
+FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FORMAT THISTOGRAM) += fate-filter-thistogram-scroll
+fate-filter-thistogram-scroll: CMD = framecrc -lavfi testsrc2=s=65x49:r=1:d=1,format=yuv420p,thistogram=display_mode=parade:components=7:slide=scroll -flags +bitexact
 
 FATE_FILTER_VSYNTH_PGMYUV-$(CONFIG_WAVEFORM_FILTER) += fate-filter-waveform_column
 fate-filter-waveform_column: CMD = framecrc -c:v pgmyuv -i $(SRC) -vf waveform -flags +bitexact -sws_flags +accurate_rnd+bitexact
@@ -379,6 +396,9 @@ FATE_FILTER_VSYNTH_PGMYUV-$(CONFIG_SWAPRECT_FILTER) += $(FATE_SWAPRECT)
 FATE_FILTER_VSYNTH_PGMYUV-$(CONFIG_TBLEND_FILTER) += fate-filter-tblend
 fate-filter-tblend: CMD = framecrc -c:v pgmyuv -i $(SRC) -vf tblend=all_mode=difference128
 
+FATE_FILTER-$(call FILTERFRAMECRC, BLEND FORMAT NULLSRC SCALE SPLIT) += fate-filter-blend-expr-clipping
+fate-filter-blend-expr-clipping: CMD = framecrc -lavfi "nullsrc=s=1x1:d=1:r=1,format=gray10,split[a][b];[a][b]blend=c0_expr=1024,scale" -pix_fmt gray10le
+
 FATE_FILTER_VSYNTH_PGMYUV-$(CONFIG_TELECINE_FILTER) += fate-filter-telecine
 fate-filter-telecine: CMD = framecrc -c:v pgmyuv -i $(SRC) -vf telecine
 
@@ -492,6 +512,15 @@ fate-filter-fps-down-eof-pass: CMD = framecrc -lavfi testsrc2=r=7:d=3.5,fps=3:eo
 fate-filter-fps-start-drop: CMD = framecrc -lavfi testsrc2=r=7:d=3.5,fps=3:start_time=1.5
 fate-filter-fps-start-fill: CMD = framecrc -lavfi testsrc2=r=7:d=1.5,setpts=PTS+14,fps=3:start_time=1.5
 
+FATE_LIBAVFILTER-yes += fate-filter-drawutils
+fate-filter-drawutils: libavfilter/tests/drawutils$(EXESUF)
+fate-filter-drawutils: CMD = run libavfilter/tests/drawutils$(EXESUF)
+
+FATE_LIBAVFILTER-$(CONFIG_NLMEANS_FILTER) += fate-filter-nlmeans-integral
+fate-filter-nlmeans-integral: libavfilter/tests/integral$(EXESUF)
+fate-filter-nlmeans-integral: CMD = run libavfilter/tests/integral$(EXESUF)
+fate-filter-nlmeans-integral: CMP = null
+
 DRAWVG_SCRIPT_ALL = $(SRC_PATH)/tests/ref/lavf/drawvg.all
 
 FATE_FILTER-$(CONFIG_DRAWVG_FILTER) += fate-filter-drawvg-interpreter
@@ -539,9 +568,56 @@ FATE_FILTER_VSYNTH-$(call ALLYES, TESTSRC_FILTER SCALE_FILTER NULLSINK_FILTER FR
 fate-filter-scale2ref_keep_aspect: tests/data/filtergraphs/scale2ref_keep_aspect
 fate-filter-scale2ref_keep_aspect: CMD = framemd5 -frames:v 5 -/filter_complex $(TARGET_PATH)/tests/data/filtergraphs/scale2ref_keep_aspect -map "[main]"
 
+FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FORMAT SCALE) += fate-filter-scalechroma-yuyv422 fate-filter-scalechroma-uyvy422 fate-filter-scalechroma-yuyv422-topleft fate-filter-scalechroma-nv24
+fate-filter-scalechroma-yuyv422: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1,scale=flags=accurate_rnd+bitexact,format=yuyv422,scale=in_chroma_loc=left:out_chroma_loc=center:flags=accurate_rnd+bitexact,format=yuv420p -frames:v 1
+fate-filter-scalechroma-uyvy422: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1,scale=flags=accurate_rnd+bitexact,format=uyvy422,scale=in_chroma_loc=left:out_chroma_loc=center:flags=accurate_rnd+bitexact,format=yuv420p -frames:v 1
+fate-filter-scalechroma-yuyv422-topleft: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1,scale=flags=accurate_rnd+bitexact,format=yuyv422,scale=in_chroma_loc=left:out_chroma_loc=topleft:flags=accurate_rnd+bitexact,format=yuv420p -frames:v 1
+fate-filter-scalechroma-nv24: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1,scale=flags=accurate_rnd+bitexact,format=nv24,scale=out_chroma_loc=left:flags=accurate_rnd+bitexact,format=yuv420p -frames:v 1
+
+FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FORMAT SCALE) += fate-filter-scalechroma-infer
+fate-filter-scalechroma-infer: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1,format=yuv420p,scale=96:80:out_chroma_loc=left:flags=accurate_rnd+bitexact,format=yuv420p -frames:v 1
+
+FATE_FILTER_FFPROBE-$(call ALLYES, FFPROBE LAVFI_INDEV WRAPPED_AVFRAME_DECODER TESTSRC2_FILTER FORMAT_FILTER SCALE_FILTER) += fate-filter-scalechroma-infer-noop
+fate-filter-scalechroma-infer-noop: CMD = probe -print_format compact -show_entries frame=chroma_location -f lavfi "testsrc2=s=64x64:r=1:d=1,format=yuv420p,scale=out_chroma_loc=left"
+
 FATE_FILTER_VSYNTH-$(call FILTERDEMDEC, SCALE, RAWVIDEO, RAWVIDEO) += fate-filter-scalechroma
 fate-filter-scalechroma: tests/data/vsynth1.yuv
 fate-filter-scalechroma: CMD = framecrc -flags bitexact -s 352x288 -pix_fmt yuv444p -i $(TARGET_PATH)/tests/data/vsynth1.yuv -pix_fmt yuv420p -sws_flags +bitexact -vf scale=out_chroma_loc=bottomleft
+
+FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FORMAT SCALE, SWSCALE_ALPHA) += fate-filter-scalechroma-alphablend fate-filter-scalechroma-alphablend-scaled
+fate-filter-scalechroma-alphablend: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1:alpha=128,format=yuva420p,scale=in_chroma_loc=topleft:out_chroma_loc=center:alphablend=uniform_color:flags=accurate_rnd+bitexact,format=yuv420p -frames:v 1
+fate-filter-scalechroma-alphablend-scaled: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1:alpha=128,format=yuva420p,scale=96:80:in_chroma_loc=topleft:out_chroma_loc=center:alphablend=uniform_color:flags=accurate_rnd+bitexact,format=yuv420p -frames:v 1
+
+FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FORMAT SCALE) += fate-filter-scalechroma-matrix fate-filter-scalechroma-downscale
+fate-filter-scalechroma-matrix: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1,format=yuv420p,scale=96:80:in_color_matrix=bt709:out_color_matrix=bt470bg:in_range=tv:out_range=tv:in_chroma_loc=topleft:out_chroma_loc=center:flags=accurate_rnd+bitexact,format=yuv420p -frames:v 1
+fate-filter-scalechroma-downscale: CMD = framecrc -flags bitexact -lavfi testsrc2=s=2048x2048:r=1:d=1,format=yuv420p,scale=8:8:in_chroma_loc=topleft:out_chroma_loc=center:flags=accurate_rnd+bitexact,format=yuv420p -frames:v 1
+
+FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FORMAT SETPARAMS SCALE) += fate-filter-scalechroma-setparams
+fate-filter-scalechroma-setparams: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1,format=yuv420p,format=chroma_locations=left,setparams=chroma_location=center,scale=flags=accurate_rnd+bitexact,format=yuv420p -frames:v 1
+
+FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FORMAT SCALE) += fate-filter-scalechroma-ref
+fate-filter-scalechroma-ref: CMD = framecrc -flags bitexact -lavfi "testsrc2=s=64x64:r=1:d=1,format=yuv420p,format=chroma_locations=left[m];testsrc2=s=32x48:r=1:d=1,format=yuv420p,format=chroma_locations=center[r];[m][r]scale=w=rw:h=rh:flags=accurate_rnd+bitexact,format=yuv420p" -frames:v 1
+
+FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FORMAT SCALE) += fate-filter-scalechroma-untagged fate-filter-scalechroma-untagged-422
+fate-filter-scalechroma-untagged: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1,format=yuv420p,scale=96:80:flags=accurate_rnd+bitexact,format=pix_fmts=yuv420p:chroma_locations=left -frames:v 1
+fate-filter-scalechroma-untagged-422: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1,format=yuv420p,scale=flags=accurate_rnd+bitexact,format=pix_fmts=yuv422p:chroma_locations=topleft -frames:v 1
+
+FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FORMAT SETPARAMS SCALE NOFORMAT) += fate-filter-noformat-chroma
+fate-filter-noformat-chroma: CMD = framecrc -flags bitexact -lavfi testsrc2=s=64x64:r=1:d=1,format=yuv420p,setparams=chroma_location=left,scale=flags=accurate_rnd+bitexact,noformat=chroma_locations=left -frames:v 1
+
+FATE_FILTER-$(call FILTERFRAMECRC, TESTSRC2 FORMAT SETPARAMS ZSCALE SCALE, LAVFI_INDEV WRAPPED_AVFRAME_DECODER) += fate-filter-zscale-chroma-input-override
+fate-filter-zscale-chroma-input-override: CMD = framecrc -flags bitexact -f lavfi -i testsrc2=s=64x64:r=2:d=2,setparams=chroma_location=left -vf zscale=chromalin=center,format=chroma_locations=center,scale=flags=accurate_rnd+bitexact -frames:v 4
+
+FATE_FILTER-$(call ALLYES, SCALE_FILTER TESTSRC2_FILTER LAVFI_INDEV \
+                           WRAPPED_AVFRAME_DECODER WRAPPED_AVFRAME_ENCODER \
+                           NULL_MUXER) += fate-filter-scale-print-info \
+                                          fate-filter-scale-print-info-sub
+fate-filter-scale-print-info: CMD = run $(FFMPEG) -nostdin -hide_banner -filter_threads 1 -f lavfi -i "testsrc2=s=16x16:d=0.04" -vf "scale=32:32:flags=+print_info:scaler=lanczos" -frames:v 1 -f null -
+fate-filter-scale-print-info: CMP = grep
+fate-filter-scale-print-info: REF = Lanczos scaler
+fate-filter-scale-print-info-sub: CMD = run $(FFMPEG) -nostdin -hide_banner -filter_threads 1 -f lavfi -i "testsrc2=s=16x16:d=0.04" -vf "scale=32:32:flags=bicublin+print_info:scaler_sub=lanczos" -frames:v 1 -f null -
+fate-filter-scale-print-info-sub: CMP = grep
+fate-filter-scale-print-info-sub: REF = bicubic scaler
 
 # Regression test: cascaded scale=...:-2 on extreme aspect ratios could
 # previously produce zero output dimensions, silently accepted by scale
@@ -550,6 +626,9 @@ fate-filter-scalechroma: CMD = framecrc -flags bitexact -s 352x288 -pix_fmt yuv4
 FATE_FILTER-$(call ALLYES, SCALE_FILTER COLOR_FILTER LAVFI_INDEV WRAPPED_AVFRAME_ENCODER NULL_MUXER) += fate-filter-scale-zero-dim
 fate-filter-scale-zero-dim: CMD = ! run $(FFMPEG) -nostdin -hide_banner -f lavfi -i "color=c=red:s=3000x2:d=1" -vf "scale=iw/2:-2,scale=iw/3:-2,scale=iw/2:-2" -f null none
 fate-filter-scale-zero-dim: CMP = null
+
+FATE_FILTER_FFPROBE-$(call ALLYES, FFPROBE LAVFI_INDEV WRAPPED_AVFRAME_DECODER TESTSRC2_FILTER FORMAT_FILTER SETPARAMS_FILTER ZSCALE_FILTER) += fate-filter-zscale-passthrough
+fate-filter-zscale-passthrough: CMD = probe -print_format compact -show_entries frame=color_primaries,color_transfer -f lavfi "testsrc2=s=64x64:r=2:d=2,format=gbrp,setparams=color_primaries=bt709:color_trc=bt709,zscale=primariesin=bt470bg:primaries=bt470bg:transferin=smpte170m:transfer=smpte170m"
 
 FATE_FILTER_VSYNTH_VIDEO_FILTER-$(CONFIG_VFLIP_FILTER) += fate-filter-vflip
 fate-filter-vflip: CMD = video_filter "vflip"
@@ -831,7 +910,11 @@ fate-filter-metadata-silencedetect: CMD = run $(FILTER_METADATA_COMMAND) "amovie
 EBUR128_METADATA_DEPS = LAVFI_INDEV AMOVIE_FILTER FLAC_DEMUXER FLAC_DECODER ARESAMPLE_FILTER EBUR128_FILTER
 FATE_METADATA_FILTER-$(call ALLYES, $(EBUR128_METADATA_DEPS)) += fate-filter-metadata-ebur128
 fate-filter-metadata-ebur128: SRC = $(TARGET_SAMPLES)/filter/seq-3341-7_seq-3342-5-24bit.flac
-fate-filter-metadata-ebur128: CMD = run $(FILTER_METADATA_COMMAND) "amovie='$(SRC)',ebur128=metadata=1"
+fate-filter-metadata-ebur128: CMD = run $(FILTER_METADATA_COMMAND) "amovie='$(SRC)',ebur128=peak=sample:metadata=1"
+
+EBUR128_HEIGHT_DEPS = FFPROBE LAVFI_INDEV AEVALSRC_FILTER ARESAMPLE_FILTER EBUR128_FILTER
+FATE_FILTER_FFPROBE-$(call ALLYES, $(EBUR128_HEIGHT_DEPS)) += fate-filter-metadata-ebur128-height
+fate-filter-metadata-ebur128-height: CMD = run $(FILTER_METADATA_COMMAND) "aevalsrc=0.12589*sin(2*PI*997*t):channel_layout=TBL:sample_rate=48000:duration=0.4,ebur128=metadata=1"
 
 READVITC_METADATA_DEPS = LAVFI_INDEV MOVIE_FILTER \
                          AVI_DEMUXER FFVHUFF_DECODER READVITC_FILTER
@@ -896,6 +979,8 @@ FATE_SAMPLES_FFMPEG += $(FATE_FILTER_SAMPLES-yes)
 FATE_FFPROBE += $(FATE_FILTER_FFPROBE-yes)
 FATE_FFMPEG += $(FATE_FILTER-yes)
 
-fate-vfilter: $(FATE_FILTER-yes) $(FATE_FILTER_SAMPLES-yes) $(FATE_FILTER_VSYNTH-yes)
+FATE-$(CONFIG_AVFILTER) += $(FATE_LIBAVFILTER-yes)
+
+fate-vfilter: $(FATE_FILTER-yes) $(FATE_FILTER_SAMPLES-yes) $(FATE_FILTER_VSYNTH-yes) $(FATE_LIBAVFILTER-yes)
 
 fate-filter: fate-afilter fate-vfilter $(FATE_METADATA_FILTER-yes) $(FATE_FILTER_FFPROBE-yes)
