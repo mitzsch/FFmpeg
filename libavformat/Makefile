@@ -324,6 +324,7 @@ OBJS-$(CONFIG_IMAGE_PPM_PIPE_DEMUXER)     += img2dec.o img2.o
 OBJS-$(CONFIG_IMAGE_PSD_PIPE_DEMUXER)     += img2dec.o img2.o
 OBJS-$(CONFIG_IMAGE_QDRAW_PIPE_DEMUXER)   += img2dec.o img2.o
 OBJS-$(CONFIG_IMAGE_QOI_PIPE_DEMUXER)     += img2dec.o img2.o
+OBJS-$(CONFIG_IMAGE_RW2_PIPE_DEMUXER)     += img2dec.o img2.o
 OBJS-$(CONFIG_IMAGE_SGI_PIPE_DEMUXER)     += img2dec.o img2.o
 OBJS-$(CONFIG_IMAGE_SVG_PIPE_DEMUXER)     += img2dec.o img2.o
 OBJS-$(CONFIG_IMAGE_SUNRAST_PIPE_DEMUXER) += img2dec.o img2.o
@@ -737,6 +738,7 @@ OBJS-$(CONFIG_DTLS_PROTOCOL)             += tls.o $(TLS-OBJS-yes)
 OBJS-$(CONFIG_UDP_PROTOCOL)              += udp.o ip.o
 OBJS-$(CONFIG_UDPLITE_PROTOCOL)          += udp.o ip.o
 OBJS-$(CONFIG_UNIX_PROTOCOL)             += unix.o
+OBJS-$(CONFIG_WINDOWS_HANDLE_PROTOCOL)   += file.o
 
 # external library protocols
 OBJS-$(CONFIG_LIBAMQP_PROTOCOL)          += libamqp.o
@@ -800,6 +802,7 @@ TESTPROGS-$(CONFIG_HTTP_PROTOCOL)        += http
 TESTPROGS-$(CONFIG_NETWORK)              += noproxy
 TESTPROGS-$(CONFIG_SRTP)                 += srtp
 TESTPROGS-$(CONFIG_IMF_DEMUXER)          += imf
+TESTPROGS-$(CONFIG_MP3_MUXER)            += id3v2enc
 TESTPROGS-$(CONFIG_OGG_MUXER)            += ogg_pages
 
 TOOLS     = aviocat                                                     \
