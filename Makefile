@@ -18,7 +18,7 @@ vpath %.ptx  $(SRC_PATH)
 vpath %.metal $(SRC_PATH)
 vpath %/fate_config.sh.template $(SRC_PATH)
 
-TESTTOOLS   = audiogen videogen rotozoom tiny_psnr tiny_ssim base64 audiomatch
+TESTTOOLS   = audiogen videogen rotozoom tiny_psnr tiny_ssim base64 audiomatch amrgen apnggen
 HOSTPROGS  := $(TESTTOOLS:%=tests/%) doc/print_options
 
 ALLFFLIBS =            \
@@ -120,7 +120,7 @@ ffbuild/.config: $(CONFIGURABLE_COMPONENTS)
 	@-tput sgr0 2>/dev/null
 
 SUBDIR_VARS := CLEANFILES FFLIBS DEVPROGS HOSTPROGS TESTPROGS TOOLS      \
-               HEADERS ARCH_HEADERS BUILT_HEADERS SKIPHEADERS            \
+               HEADERS ARCH_HEADERS BUILT_HEADERS SKIPHEADERS HEADER_DIRS            \
                ARMV5TE-OBJS ARMV6-OBJS ARMV8-OBJS VFP-OBJS NEON-OBJS     \
                ALTIVEC-OBJS VSX-OBJS X86ASM-OBJS                         \
                MIPSFPU-OBJS MIPSDSPR2-OBJS MIPSDSP-OBJS MSA-OBJS         \
@@ -234,5 +234,5 @@ $(sort $(OUTDIRS)):
 # so this saves some time on slow systems.
 .SUFFIXES:
 
-.PHONY: all all-yes alltools build check config testprogs
+.PHONY: all all-yes alltools build check config devprogs testprogs
 .PHONY: *clean install* uninstall*

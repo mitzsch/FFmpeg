@@ -173,7 +173,7 @@ static void build_histogram(ReadEIA608Context *s, ScanItem *scan, const LineItem
     memset(scan->histogram, 0, (s->max + 1) * sizeof(*scan->histogram));
 
     for (int i = LAG; i < len + LAG; i++)
-        scan->histogram[line[i].input]++;
+        scan->histogram[FFMIN(line[i].input, s->max)]++;
 }
 
 static void find_black_and_white(ReadEIA608Context *s, ScanItem *scan)
@@ -446,8 +446,8 @@ static int extract_lines(AVFilterContext *ctx, void *arg,
     ReadEIA608Context *s = ctx->priv;
     AVFilterLink *inlink = ctx->inputs[0];
     const int h = s->end - s->start + 1;
-    const int start = (h * job) / nb_jobs;
-    const int end   = (h * (job+1)) / nb_jobs;
+    const int start = ff_slice_pos(h, job, nb_jobs);
+    const int end   = ff_slice_pos(h, job + 1, nb_jobs);
     AVFrame *in = arg;
 
     for (int i = start; i < end; i++) {

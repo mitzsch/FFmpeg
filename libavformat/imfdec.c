@@ -77,6 +77,7 @@
 
 #define AVRATIONAL_FORMAT "%d/%d"
 #define AVRATIONAL_ARG(rational) rational.num, rational.den
+#define MAX_RESOURCES FFMIN(1 << 20, INT_MAX / (int)sizeof(IMFVirtualTrackResourcePlaybackCtx))
 
 /**
  * IMF Asset locator
@@ -125,6 +126,7 @@ typedef struct IMFContext {
     IMFAssetLocatorMap asset_locator_map;
     uint32_t track_count;
     IMFVirtualTrackPlaybackCtx **tracks;
+    uint32_t total_resource_count;
 } IMFContext;
 
 static int imf_uri_is_url(const char *string)
@@ -466,6 +468,7 @@ static int open_track_file_resource(AVFormatContext *s,
 {
     IMFContext *c = s->priv_data;
     IMFAssetLocator *asset_locator;
+    AVRational duration;
     void *tmp;
 
     asset_locator = find_asset_map_locator(&c->asset_locator_map, track_file_resource->track_file_uuid);
@@ -481,10 +484,10 @@ static int open_track_file_resource(AVFormatContext *s,
            AV_UUID_ARG(asset_locator->uuid),
            asset_locator->absolute_uri);
 
-    if (track->resource_count > INT32_MAX - track_file_resource->base.repeat_count
-        || (track->resource_count + track_file_resource->base.repeat_count)
-            > INT_MAX / sizeof(IMFVirtualTrackResourcePlaybackCtx))
+    if (track_file_resource->base.repeat_count
+            > MAX_RESOURCES - c->total_resource_count)
         return AVERROR(ENOMEM);
+    c->total_resource_count += track_file_resource->base.repeat_count;
     tmp = av_fast_realloc(track->resources,
                           &track->resources_alloc_sz,
                           (track->resource_count + track_file_resource->base.repeat_count)
@@ -492,6 +495,10 @@ static int open_track_file_resource(AVFormatContext *s,
     if (!tmp)
         return AVERROR(ENOMEM);
     track->resources = tmp;
+
+    av_reduce(&duration.num, &duration.den,
+              track_file_resource->base.duration * (int64_t)track_file_resource->base.edit_rate.den,
+              track_file_resource->base.edit_rate.num, INT_MAX);
 
     for (uint32_t i = 0; i < track_file_resource->base.repeat_count; i++) {
         IMFVirtualTrackResourcePlaybackCtx vt_ctx;
@@ -503,10 +510,7 @@ static int open_track_file_resource(AVFormatContext *s,
         vt_ctx.ts_offset = av_sub_q(vt_ctx.start_time,
                                     av_div_q(av_make_q((int)track_file_resource->base.entry_point, 1),
                                              track_file_resource->base.edit_rate));
-        vt_ctx.end_time = av_add_q(track->duration,
-                                   av_make_q((int)track_file_resource->base.duration
-                                                 * track_file_resource->base.edit_rate.den,
-                                             track_file_resource->base.edit_rate.num));
+        vt_ctx.end_time = av_add_q(track->duration, duration);
         track->resources[track->resource_count++] = vt_ctx;
         track->duration = vt_ctx.end_time;
     }
@@ -942,16 +946,8 @@ static int imf_probe(const AVProbeData *p)
 
 static int coherent_ts(int64_t ts, AVRational in_tb, AVRational out_tb)
 {
-    int dst_num;
-    int dst_den;
-    int ret;
-
-    ret = av_reduce(&dst_num, &dst_den, ts * in_tb.num * out_tb.den,
-                    in_tb.den * out_tb.num, INT64_MAX);
-    if (!ret || dst_den != 1)
-        return 0;
-
-    return 1;
+    return av_rescale_q_rnd(ts, in_tb, out_tb, AV_ROUND_DOWN) ==
+           av_rescale_q_rnd(ts, in_tb, out_tb, AV_ROUND_UP);
 }
 
 static int imf_seek(AVFormatContext *s, int stream_index, int64_t min_ts,
@@ -992,9 +988,7 @@ static int imf_seek(AVFormatContext *s, int stream_index, int64_t min_ts,
                          st->time_base))
             av_log(s, AV_LOG_WARNING, "Seek position is not coherent across tracks\n");
 
-        dts = av_rescale(ts,
-                         st->time_base.den * c->cpl->edit_rate.den,
-                         st->time_base.num * c->cpl->edit_rate.num);
+        dts = av_rescale_q(ts, av_inv_q(c->cpl->edit_rate), st->time_base);
 
         av_log(s, AV_LOG_DEBUG, "Seeking to dts=%" PRId64 " on stream_index=%d\n",
                dts, i);

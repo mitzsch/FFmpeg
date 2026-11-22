@@ -6,6 +6,7 @@
 /bitstream_be
 /bitstream_le
 /cabac
+/cavsdsp
 /celp_math
 /codec_desc
 /dct
@@ -19,5 +20,6 @@
 /mjpegenc_huffman
 /mpeg12framerate
 /mpegaudiodecheader
+/packet_side_data_handle
 /rangecoder
 /snowenc

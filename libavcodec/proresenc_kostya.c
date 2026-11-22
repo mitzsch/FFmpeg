@@ -762,11 +762,8 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     int frame_size, picture_size, slice_size;
     int pkt_size, ret;
     int max_slice_size = (ctx->frame_size_upper_bound - 200) / (ctx->pictures_per_frame * ctx->slices_per_picture + 1);
-    int slice_size_upper_bound = ctx->mbs_per_slice * (ctx->chroma_factor == CFACTOR_Y444 ? 768 : 512) * 8;
+    int slice_size_upper_bound = ctx->slice_size_upper_bound;
     uint8_t frame_flags;
-
-    if (ctx->alpha_bits)
-        slice_size_upper_bound += ctx->mbs_per_slice * 256 * (1 + ctx->alpha_bits + 1) + 7 >> 3;
 
     ctx->pic = pic;
     pkt_size = ctx->frame_size_upper_bound + slice_size_upper_bound;
@@ -795,9 +792,9 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     bytestream_put_byte  (&buf, frame_flags);
 
     bytestream_put_byte  (&buf, 0);             // reserved
-    bytestream_put_byte  (&buf, pic->color_primaries);
-    bytestream_put_byte  (&buf, pic->color_trc);
-    bytestream_put_byte  (&buf, pic->colorspace);
+    bytestream_put_byte  (&buf, ff_prores_color_primaries(pic->color_primaries));
+    bytestream_put_byte  (&buf, ff_prores_color_trc(pic->color_trc));
+    bytestream_put_byte  (&buf, ff_prores_colorspace(pic->colorspace));
     bytestream_put_byte  (&buf, ctx->alpha_bits >> 3);
     bytestream_put_byte  (&buf, 0);             // reserved
     if (ctx->quant_sel != QUANT_MAT_DEFAULT) {

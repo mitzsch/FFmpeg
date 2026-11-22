@@ -27,6 +27,7 @@
 #include "libavutil/common.h"
 #include "libavutil/eval.h"
 #include "libavutil/frame.h"
+#include "libavutil/framepool.h"
 #include "libavutil/hwcontext.h"
 #include "libavutil/internal.h"
 #include "libavutil/mem.h"
@@ -41,7 +42,6 @@
 #include "filters.h"
 #include "formats.h"
 #include "framequeue.h"
-#include "framepool.h"
 #include "video.h"
 
 static void tlog_ref(void *ctx, AVFrame *ref, int end)
@@ -149,12 +149,14 @@ int ff_append_outpad_free_name(AVFilterContext *f, AVFilterPad *p)
 int avfilter_link(AVFilterContext *src, unsigned srcpad,
                   AVFilterContext *dst, unsigned dstpad)
 {
+    FFFilterGraph *graphi;
     FilterLinkInternal *li;
     AVFilterLink *link;
 
     av_assert0(src->graph);
     av_assert0(dst->graph);
     av_assert0(src->graph == dst->graph);
+    graphi = fffiltergraph(src->graph);
 
     if (src->nb_outputs <= srcpad || dst->nb_inputs <= dstpad ||
         src->outputs[srcpad]      || dst->inputs[dstpad])
@@ -190,7 +192,8 @@ int avfilter_link(AVFilterContext *src, unsigned srcpad,
     av_assert0(AV_PIX_FMT_NONE == -1 && AV_SAMPLE_FMT_NONE == -1);
     link->format  = -1;
     link->colorspace = AVCOL_SPC_UNSPECIFIED;
-    ff_framequeue_init(&li->fifo, &fffiltergraph(src->graph)->frame_queues);
+    av_assert1(link->type >= 0 && link->type < FF_ARRAY_ELEMS(graphi->frame_queues));
+    ff_framequeue_init(&li->fifo, &graphi->frame_queues[link->type]);
 
     return 0;
 }
@@ -230,6 +233,39 @@ void ff_filter_set_ready(AVFilterContext *filter, unsigned priority)
 {
     FFFilterContext *ctxi = fffilterctx(filter);
     ctxi->ready = FFMAX(ctxi->ready, priority);
+}
+
+void ff_filter_log_lines(void *ctx, int level, const AVBPrint *bp)
+{
+    const char *p, *end;
+
+    if (!bp->size)
+        return;
+
+    p   = bp->str;
+    end = bp->str + FFMIN(bp->len, bp->size - 1);
+    while (p < end) {
+        /* Look no further than the next chunk, so long lines stay linear. */
+        const char *nl = memchr(p, '\n', FFMIN(end - p, FF_FILTER_LOG_LINE_MAX + 1));
+        size_t len  = nl ? nl - p : end - p;
+        size_t skip = 1;
+
+        if (len > FF_FILTER_LOG_LINE_MAX) {
+            len  = FF_FILTER_LOG_LINE_MAX;
+            skip = 0;
+            for (size_t i = len; i > len / 2; i--) {
+                if (p[i] == ' ') {
+                    len = i;
+                    break;
+                }
+            }
+        }
+        av_log(ctx, level, "%.*s\n", (int)len, p);
+        p += len + skip;
+    }
+
+    if (!av_bprint_is_complete(bp))
+        av_log(ctx, AV_LOG_WARNING, "Log output truncated, out of memory\n");
 }
 
 /**
@@ -1596,6 +1632,8 @@ int ff_inlink_make_frame_writable(AVFilterLink *link, AVFrame **rframe)
 
     switch (link->type) {
     case AVMEDIA_TYPE_VIDEO:
+        if (frame->format != link->format)
+            return av_frame_make_writable(frame);
         out = ff_get_video_buffer(link, frame->width, frame->height);
         break;
     case AVMEDIA_TYPE_AUDIO:

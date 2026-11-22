@@ -109,6 +109,9 @@ fate-sub-webvtt: CMD = fmtstdout ass -i $(TARGET_SAMPLES)/sub/WebVTT_capability_
 FATE_SUBTITLES_ASS-$(call DEMDEC, WEBVTT, WEBVTT) += fate-sub-webvtt2
 fate-sub-webvtt2: CMD = fmtstdout ass -i $(TARGET_SAMPLES)/sub/WebVTT_extended_tester.vtt
 
+FATE_SUBTITLES-$(call ALLYES, WEBVTT_DEMUXER FRAMECRC_MUXER) += fate-sub-webvtt-timestamp-map
+fate-sub-webvtt-timestamp-map: CMD = framecrc -copyts -timestamp_map 1 -i $(TARGET_SAMPLES)/sub/WebVTT_timestamp_map.vtt -timestamp_map 1 -i $(TARGET_SAMPLES)/sub/WebVTT_timestamp_map_block.vtt -timestamp_map 1 -i $(TARGET_SAMPLES)/sub/WebVTT_timestamp_map_invalid.vtt -timestamp_map 1 -i $(TARGET_SAMPLES)/sub/WebVTT_timestamp_map_nolocal.vtt -timestamp_map 1 -i $(TARGET_SAMPLES)/sub/WebVTT_timestamp_map_range.vtt -i $(TARGET_SAMPLES)/sub/WebVTT_timestamp_map.vtt -map 0 -map 1 -map 2 -map 3 -map 4 -map 5 -c copy
+
 FATE_SUBTITLES-$(call ALLYES, SRT_DEMUXER SUBRIP_DECODER WEBVTT_ENCODER WEBVTT_MUXER) += fate-sub-webvttenc
 fate-sub-webvttenc: CMD = fmtstdout webvtt -i $(TARGET_SAMPLES)/sub/SubRip_capability_tester.srt
 
@@ -127,6 +130,9 @@ fate-sub-charenc: CMD = fmtstdout ass -sub_charenc cp1251 -i $(TARGET_SAMPLES)/s
 FATE_SUBTITLES-$(call DEMDEC, SCC, CCAPTION) += fate-sub-scc
 fate-sub-scc: CMD = fmtstdout ass -ss 57 -i $(TARGET_SAMPLES)/sub/witch.scc
 fate-sub-scc: CMP = diff
+
+FATE_SUB_SCC-$(call ALLYES, FILE_PROTOCOL PIPE_PROTOCOL SCC_DEMUXER CCAPTION_DECODER ASS_ENCODER ASS_MUXER) += fate-sub-scc-extended
+fate-sub-scc-extended: CMD = fmtstdout ass -i $(SRC_PATH)/tests/sub-scc-extended.scc
 
 FATE_SUBTITLES-$(call DEMMUX, SCC, SCC) += fate-sub-scc-remux
 fate-sub-scc-remux: CMD = fmtstdout scc -i $(TARGET_SAMPLES)/sub/witch.scc -ss 4:00 -map 0 -c copy
@@ -169,6 +175,29 @@ FATE_SUBTITLES_PROBE-$(call DEMDEC, MPEGTS, LIBARIBCAPTION) += fate-sub-aribcapt
 fate-sub-aribcaption-clear: CMD = probeframes -sub_type bitmap $(TARGET_SAMPLES)/sub/aribcaption_clear.ts
 fate-sub-aribcaption-clear: CMP = diff
 
+# same sample in text and ass mode: only CS must emit a clear event, which
+# the ass dialogue shows as an empty text
+FATE_SUBTITLES_PROBE-$(call DEMDEC, MPEGTS, LIBARIBCAPTION) += fate-sub-aribcaption-clear-text
+fate-sub-aribcaption-clear-text: CMD = probeframes -sub_type text $(TARGET_SAMPLES)/sub/aribcaption_clear.ts
+FATE_SUBTITLES_ASS-$(call DEMDEC, MPEGTS, LIBARIBCAPTION) += fate-sub-aribcaption-clear-ass
+fate-sub-aribcaption-clear-ass: CMD = fmtstdout ass -sub_type ass -font sans-serif -i $(TARGET_SAMPLES)/sub/aribcaption_clear.ts
+fate-sub-aribcaption-clear-text fate-sub-aribcaption-clear-ass: CMP = diff
+
+# caption, CS + ruby only, CS + ruby above a caption, ruby only without CS;
+# with ignore_ruby only CS must clear, and skipped ruby must not be drawn
+FATE_SUBTITLES_PROBE-$(call DEMDEC, MPEGTS, LIBARIBCAPTION) += fate-sub-aribcaption-ruby-bitmap
+fate-sub-aribcaption-ruby-bitmap: CMD = probeframes -sub_type bitmap -ignore_ruby 1 $(TARGET_SAMPLES)/sub/aribcaption_ruby.ts
+FATE_SUBTITLES_ASS-$(call DEMDEC, MPEGTS, LIBARIBCAPTION) += fate-sub-aribcaption-ruby-ass
+fate-sub-aribcaption-ruby-ass: CMD = fmtstdout ass -sub_type ass -font sans-serif -ass_single_rect 0 -ignore_ruby 1 -i $(TARGET_SAMPLES)/sub/aribcaption_ruby.ts
+FATE_SUBTITLES_ASS-$(call DEMDEC, MPEGTS, LIBARIBCAPTION) += fate-sub-aribcaption-ruby-ass-single
+fate-sub-aribcaption-ruby-ass-single: CMD = fmtstdout ass -sub_type ass -font sans-serif -ass_single_rect 1 -ignore_ruby 1 -i $(TARGET_SAMPLES)/sub/aribcaption_ruby.ts
+fate-sub-aribcaption-ruby-bitmap fate-sub-aribcaption-ruby-ass fate-sub-aribcaption-ruby-ass-single: CMP = diff
+
+# text mode never holds ruby: only CS may turn a ruby only caption into a clear
+FATE_SUBTITLES_PROBE-$(call DEMDEC, MPEGTS, LIBARIBCAPTION) += fate-sub-aribcaption-ruby-text
+fate-sub-aribcaption-ruby-text: CMD = probeframes -sub_type text $(TARGET_SAMPLES)/sub/aribcaption_ruby.ts
+fate-sub-aribcaption-ruby-text: CMP = diff
+
 FATE_SUBTITLES-$(call ENCMUX, ASS, ASS) += $(FATE_SUBTITLES_ASS-yes)
 FATE_SUBTITLES += $(FATE_SUBTITLES-yes)
 FATE_SUBTITLES := $(if $(CONFIG_PIPE_PROTOCOL), $(FATE_SUBTITLES))
@@ -177,5 +206,6 @@ fate-sub-%: CMP = rawdiff
 
 FATE_SAMPLES_FFMPEG += $(FATE_SUBTITLES)
 FATE_SAMPLES_FFPROBE += $(FATE_SUBTITLES_PROBE-yes)
-fate-subtitles: $(FATE_SUBTITLES) $(FATE_SUB_KARAOKE-yes) $(FATE_SUBTITLES_PROBE-yes)
+fate-subtitles: $(FATE_SUBTITLES) $(FATE_SUB_KARAOKE-yes) $(FATE_SUB_SCC-yes) $(FATE_SUBTITLES_PROBE-yes)
 FATE_FFMPEG-yes += $(FATE_SUB_KARAOKE-yes)
+FATE_FFMPEG-yes += $(FATE_SUB_SCC-yes)

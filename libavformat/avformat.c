@@ -123,6 +123,7 @@ FF_ENABLE_DEPRECATION_WARNINGS
     case AV_STREAM_GROUP_PARAMS_LCEVC:
     case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:
     case AV_STREAM_GROUP_PARAMS_GAIN_MAP:
+    case AV_STREAM_GROUP_PARAMS_ALPHA:
         av_opt_free(stg->params.layered_video);
         av_freep(&stg->params.layered_video);
         break;
@@ -290,20 +291,28 @@ const char *avformat_stream_group_name(enum AVStreamGroupParamsType type)
     case AV_STREAM_GROUP_PARAMS_TREF:                      return "Track Reference";
     case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:              return "Dolby Vision (Split base and enhancement layer)";
     case AV_STREAM_GROUP_PARAMS_GAIN_MAP:                  return "Gain Map (Split base rendition and gain map)";
+    case AV_STREAM_GROUP_PARAMS_ALPHA:                     return "Alpha (Split color and alpha channels)";
     }
     return NULL;
 }
 
 AVProgram *av_new_program(AVFormatContext *ac, int id)
 {
+    FFFormatContext *const si = ffformatcontext(ac);
     AVProgram *program = NULL;
     int ret;
 
     av_log(ac, AV_LOG_TRACE, "new_program: id=0x%04x\n", id);
 
-    for (unsigned i = 0; i < ac->nb_programs; i++)
-        if (ac->programs[i]->id == id)
-            program = ac->programs[i];
+    if (!ac->nb_programs) {
+        si->program_ids_monotonic = 1;
+    } else if (!si->program_ids_monotonic || ac->programs[ac->nb_programs - 1]->id >= id) {
+        for (unsigned i = 0; i < ac->nb_programs; i++)
+            if (ac->programs[i]->id == id)
+                program = ac->programs[i];
+        if (!program)
+            si->program_ids_monotonic = 0;
+    }
 
     if (!program) {
         program = av_mallocz(sizeof(*program));

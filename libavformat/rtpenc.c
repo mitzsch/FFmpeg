@@ -28,6 +28,7 @@
 #include "libavutil/mem.h"
 #include "libavutil/random_seed.h"
 #include "libavutil/opt.h"
+#include "libavcodec/opus/tab.h"
 
 #include "rtpenc.h"
 
@@ -101,6 +102,7 @@ static int rtp_write_header(AVFormatContext *s1)
 {
     RTPMuxContext *s = s1->priv_data;
     int n, ret = AVERROR(EINVAL);
+    int payload_header_size = 0;
     AVStream *st;
 
     if (s1->nb_streams != 1) {
@@ -173,10 +175,12 @@ static int rtp_write_header(AVFormatContext *s1)
     case AV_CODEC_ID_MP2:
     case AV_CODEC_ID_MP3:
         s->buf_ptr = s->buf + 4;
+        payload_header_size = 4;
         avpriv_set_pts_info(st, 32, 1, 90000);
         break;
     case AV_CODEC_ID_MPEG1VIDEO:
     case AV_CODEC_ID_MPEG2VIDEO:
+        payload_header_size = 4;
         break;
     case AV_CODEC_ID_MPEG2TS:
         if (s->max_payload_size < TS_PACKET_SIZE) {
@@ -201,6 +205,16 @@ static int rtp_write_header(AVFormatContext *s1)
             ret = AVERROR_EXPERIMENTAL;
             goto fail;
         }
+        payload_header_size = 20;
+        break;
+    case AV_CODEC_ID_H263:
+        if (s->flags & FF_RTP_FLAG_RFC2190) {
+            payload_header_size = 8;
+            break;
+        }
+        av_fallthrough;
+    case AV_CODEC_ID_H263P:
+        payload_header_size = 2;
         break;
     case AV_CODEC_ID_H261:
         if (s1->strict_std_compliance > FF_COMPLIANCE_EXPERIMENTAL) {
@@ -212,12 +226,14 @@ static int rtp_write_header(AVFormatContext *s1)
             ret = AVERROR_EXPERIMENTAL;
             goto fail;
         }
+        payload_header_size = 4;
         break;
     case AV_CODEC_ID_H264:
         /* check for H.264 MP4 syntax */
         if (st->codecpar->extradata_size > 4 && st->codecpar->extradata[0] == 1) {
             s->nal_length_size = (st->codecpar->extradata[4] & 0x03) + 1;
         }
+        payload_header_size = 2;
         break;
     case AV_CODEC_ID_HEVC:
         /* Only check for the standardized hvcC version of extradata, keeping
@@ -227,6 +243,10 @@ static int rtp_write_header(AVFormatContext *s1)
         if (st->codecpar->extradata_size > 21 && st->codecpar->extradata[0] == 1) {
             s->nal_length_size = (st->codecpar->extradata[21] & 0x03) + 1;
         }
+        payload_header_size = 3;
+        break;
+    case AV_CODEC_ID_VP8:
+        payload_header_size = 4;
         break;
     case AV_CODEC_ID_BITPACKED:
     case AV_CODEC_ID_RAWVIDEO:
@@ -251,6 +271,7 @@ static int rtp_write_header(AVFormatContext *s1)
             ret = AVERROR_EXPERIMENTAL;
             goto fail;
         }
+        payload_header_size = 1;
         break;
     case AV_CODEC_ID_AV1:
         if (s1->strict_std_compliance > FF_COMPLIANCE_EXPERIMENTAL) {
@@ -261,6 +282,7 @@ static int rtp_write_header(AVFormatContext *s1)
             ret = AVERROR_EXPERIMENTAL;
             goto fail;
         }
+        payload_header_size = 3;
         break;
     case AV_CODEC_ID_VORBIS:
     case AV_CODEC_ID_THEORA:
@@ -279,7 +301,7 @@ static int rtp_write_header(AVFormatContext *s1)
         /* The opus RTP RFC says that all opus streams should use 48000 Hz
          * as clock rate, since all opus sample rates can be expressed in
          * this clock rate, and sample rate changes on the fly are supported. */
-        avpriv_set_pts_info(st, 32, 1, 48000);
+        avpriv_set_pts_info(st, 32, 1, OPUS_TIMESTAMP_RATE);
         break;
     case AV_CODEC_ID_ILBC:
         if (st->codecpar->block_align != 38 && st->codecpar->block_align != 50) {
@@ -287,6 +309,10 @@ static int rtp_write_header(AVFormatContext *s1)
             goto fail;
         }
         s->max_frames_per_packet = s->max_payload_size / st->codecpar->block_align;
+        if (!s->max_frames_per_packet) {
+            av_log(s1, AV_LOG_ERROR, "RTP max payload size too small for iLBC\n");
+            goto fail;
+        }
         break;
     case AV_CODEC_ID_AMR_NB:
     case AV_CODEC_ID_AMR_WB:
@@ -307,9 +333,17 @@ static int rtp_write_header(AVFormatContext *s1)
         break;
     case AV_CODEC_ID_AAC:
         s->max_frames_per_packet = 50;
+        if (!(s->flags & FF_RTP_FLAG_MP4A_LATM))
+            payload_header_size = 4;
         break;
     default:
         break;
+    }
+
+    if (s->max_payload_size <= payload_header_size) {
+        av_log(s1, AV_LOG_ERROR, "Max packet size %u too low for a %d byte payload header\n",
+               s1->packet_size, payload_header_size);
+        goto fail;
     }
 
     return 0;
@@ -393,14 +427,28 @@ void ff_rtp_send_data(AVFormatContext *s1, const uint8_t *buf1, int len, int m)
 /* send an integer number of samples and compute time stamp and fill
    the rtp send buffer before sending. */
 static int rtp_send_samples(AVFormatContext *s1,
-                            const uint8_t *buf1, int size, int sample_size_bits)
+                            const uint8_t *buf1, int size, int bits_per_sample)
 {
     RTPMuxContext *s = s1->priv_data;
+    int nb_channels = s1->streams[0]->codecpar->ch_layout.nb_channels;
     int len, max_packet_size, n;
+
+    if (bits_per_sample <= 0 || nb_channels <= 0 ||
+        nb_channels > INT_MAX / bits_per_sample) {
+        av_log(s1, AV_LOG_ERROR, "Invalid sample size %d or channel count %d\n",
+               bits_per_sample, nb_channels);
+        return AVERROR(EINVAL);
+    }
+    int sample_size_bits = bits_per_sample * nb_channels;
     /* Calculate the number of bytes to get samples aligned on a byte border */
     int aligned_samples_size = sample_size_bits/av_gcd(sample_size_bits, 8);
 
     max_packet_size = (s->max_payload_size / aligned_samples_size) * aligned_samples_size;
+    if (!max_packet_size) {
+        av_log(s1, AV_LOG_ERROR, "RTP max payload size too small for %d byte samples\n",
+               aligned_samples_size);
+        return AVERROR(EINVAL);
+    }
     /* Not needed, but who knows. Don't check if samples aren't an even number of bytes. */
     if ((sample_size_bits % 8) == 0 && ((8 * size) % sample_size_bits) != 0)
         return AVERROR(EINVAL);
@@ -442,7 +490,7 @@ static void rtp_send_mpegaudio(AVFormatContext *s1,
     }
 
     /* add the packet */
-    if (size > max_packet_size) {
+    if (size > max_packet_size - 4) {
         /* big packet: fragment */
         count = 0;
         while (size > 0) {
@@ -579,24 +627,23 @@ static int rtp_write_packet(AVFormatContext *s1, AVPacket *pkt)
     case AV_CODEC_ID_PCM_ALAW:
     case AV_CODEC_ID_PCM_U8:
     case AV_CODEC_ID_PCM_S8:
-        return rtp_send_samples(s1, pkt->data, size, 8 * st->codecpar->ch_layout.nb_channels);
+        return rtp_send_samples(s1, pkt->data, size, 8);
     case AV_CODEC_ID_PCM_U16BE:
     case AV_CODEC_ID_PCM_U16LE:
     case AV_CODEC_ID_PCM_S16BE:
     case AV_CODEC_ID_PCM_S16LE:
-        return rtp_send_samples(s1, pkt->data, size, 16 * st->codecpar->ch_layout.nb_channels);
+        return rtp_send_samples(s1, pkt->data, size, 16);
     case AV_CODEC_ID_PCM_S24BE:
-        return rtp_send_samples(s1, pkt->data, size, 24 * st->codecpar->ch_layout.nb_channels);
+        return rtp_send_samples(s1, pkt->data, size, 24);
     case AV_CODEC_ID_ADPCM_G722:
         /* The actual sample size is half a byte per sample, but since the
          * stream clock rate is 8000 Hz while the sample rate is 16000 Hz,
          * the correct parameter for send_samples_bits is 8 bits per stream
          * clock. */
-        return rtp_send_samples(s1, pkt->data, size, 8 * st->codecpar->ch_layout.nb_channels);
+        return rtp_send_samples(s1, pkt->data, size, 8);
     case AV_CODEC_ID_ADPCM_G726:
     case AV_CODEC_ID_ADPCM_G726LE:
-        return rtp_send_samples(s1, pkt->data, size,
-                                st->codecpar->bits_per_coded_sample * st->codecpar->ch_layout.nb_channels);
+        return rtp_send_samples(s1, pkt->data, size, st->codecpar->bits_per_coded_sample);
     case AV_CODEC_ID_MP2:
     case AV_CODEC_ID_MP3:
         rtp_send_mpegaudio(s1, pkt->data, size);

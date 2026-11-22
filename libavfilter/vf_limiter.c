@@ -17,6 +17,7 @@
  */
 
 #include "libavutil/avassert.h"
+#include "libavfilter/vf_limiter_init.h"
 #include "libavutil/attributes.h"
 #include "libavutil/common.h"
 #include "libavutil/imgutils.h"
@@ -81,30 +82,6 @@ static const enum AVPixelFormat pix_fmts[] = {
     AV_PIX_FMT_NONE
 };
 
-#define LIMITER(n, type)                                        \
-static void limiter##n(const uint8_t *ssrc, uint8_t *ddst,      \
-                       ptrdiff_t slinesize, ptrdiff_t dlinesize,\
-                       int w, int h, int min, int max)          \
-{                                                               \
-    const type *src = (const type *)ssrc;                       \
-    type *dst = (type *)ddst;                                   \
-                                                                \
-    dlinesize /= sizeof(type);                                  \
-    slinesize /= sizeof(type);                                  \
-                                                                \
-    for (int y = 0; y < h; y++) {                               \
-        for (int x = 0; x < w; x++) {                           \
-            dst[x] = av_clip(src[x], min, max);                 \
-        }                                                       \
-                                                                \
-        dst += dlinesize;                                       \
-        src += slinesize;                                       \
-    }                                                           \
-}
-
-LIMITER(8,  uint8_t)
-LIMITER(16, uint16_t)
-
 static int config_input(AVFilterLink *inlink)
 {
     AVFilterContext *ctx = inlink->dst;
@@ -125,15 +102,7 @@ static int config_input(AVFilterLink *inlink)
     s->width[1]  = s->width[2]  = AV_CEIL_RSHIFT(inlink->w, hsub);
     s->width[0]  = s->width[3]  = inlink->w;
 
-    if (depth == 8) {
-        s->dsp.limiter = limiter8;
-    } else {
-        s->dsp.limiter = limiter16;
-    }
-
-#if ARCH_X86 && HAVE_X86ASM
-    ff_limiter_init_x86(&s->dsp, desc->comp[0].depth);
-#endif
+    ff_limiter_init(&s->dsp, depth);
 
     return 0;
 }

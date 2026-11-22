@@ -147,6 +147,12 @@ fate-filter-firequalizer: CMP = oneoff
 fate-filter-firequalizer: CMP_UNIT = s16
 fate-filter-firequalizer: SIZE_TOLERANCE = 1058400 - 1097208
 
+# The FIR length fits in int, but no supported RDFT length can contain it.
+FATE_AFILTER-$(call ALLYES, LAVFI_INDEV SINE_FILTER FIREQUALIZER_FILTER ARESAMPLE_FILTER PCM_S16$(if $(filter yes,$(HAVE_BIGENDIAN)),BE,LE)_DECODER PCM_S16LE_ENCODER NULL_MUXER) += fate-filter-firequalizer-large-delay
+fate-filter-firequalizer-large-delay: CMD = ! run $(FFMPEG) -nostdin -hide_banner -f lavfi -i "sine=sample_rate=48000" -af "firequalizer=delay=12500" -c:a pcm_s16le -t 0.1 -f null -
+fate-filter-firequalizer-large-delay: CMP = grep
+fate-filter-firequalizer-large-delay: REF = too large delay, please decrease it.
+
 FATE_AFILTER-$(call FILTERDEMDECENCMUX, PAN, WAV, PCM_S16LE, PCM_S16LE, WAV) += fate-filter-pan-mono1
 fate-filter-pan-mono1: tests/data/asynth-44100-2.wav
 fate-filter-pan-mono1: SRC = $(TARGET_PATH)/tests/data/asynth-44100-2.wav
@@ -452,6 +458,10 @@ fate-filter-crazychannels: tests/data/filtergraphs/crazychannels
 fate-filter-crazychannels: CMD = framecrc -auto_conversion_filters -/filter_complex $(TARGET_PATH)/tests/data/filtergraphs/crazychannels
 FATE_AFILTER-$(call FILTERFRAMECRC, ARESAMPLE SINE JOIN ATRIM CHANNELMAP CHANNELSPLIT, FILE_PROTOCOL) += fate-filter-crazychannels
 
+FATE_AFILTER_API-$(CONFIG_AMIX_FILTER) += fate-filter-amix-pts
+fate-filter-amix-pts: libavfilter/tests/amix$(EXESUF)
+fate-filter-amix-pts: CMD = run libavfilter/tests/amix$(EXESUF)
+
 FATE_AFILTER-yes += fate-filter-formats
 fate-filter-formats: libavfilter/tests/formats$(EXESUF)
 fate-filter-formats: CMD = run libavfilter/tests/formats$(EXESUF)
@@ -459,4 +469,5 @@ fate-filter-formats: CMD = run libavfilter/tests/formats$(EXESUF)
 FATE_AFILTER-yes := $(if $(call FRAMECRC), $(FATE_AFILTER-yes))
 FATE_SAMPLES_AVCONV += $(FATE_AFILTER_SAMPLES-yes)
 FATE_FFMPEG += $(FATE_AFILTER-yes)
-fate-afilter: $(FATE_AFILTER-yes) $(FATE_AFILTER_SAMPLES-yes)
+FATE-$(CONFIG_AVFILTER) += $(FATE_AFILTER_API-yes)
+fate-afilter: $(FATE_AFILTER-yes) $(FATE_AFILTER_SAMPLES-yes) $(FATE_AFILTER_API-yes)

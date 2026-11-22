@@ -262,6 +262,8 @@ typedef struct MOVStreamContext {
     int *extradata_size;
     int last_stsd_index;
     int stsd_count;
+    int stsd_gama_trc;  ///< transfer from the gama atom of the sample description being read
+    int stsd_colr_trc;  ///< the colr atom of the sample description being read sets the transfer
     int stsd_version;
 
     int32_t *display_matrix;
@@ -315,6 +317,7 @@ typedef struct HEIFItem {
     int vflip;
     int type;
     int is_gainmap;
+    int is_alpha;
     int is_idat_relative;
     AVExifMetadata ifd;
     uint8_t *icc_profile;
@@ -368,6 +371,8 @@ typedef struct MOVContext {
     int has_looked_for_mfra;
     int use_tfdt;
     MOVFragmentIndex frag_index;
+    uint8_t *pssh_side_data;
+    unsigned int pssh_side_data_allocated;
     int atom_depth;
     unsigned int aax_mode;  ///< 'aax' file has been detected
     uint8_t file_key[20];
@@ -503,6 +508,9 @@ static inline enum AVCodecID ff_mov_get_lpcm_codec_id(int bps, int flags)
 #define MOV_MP4_TTML_TAG  MKTAG('s', 't', 'p', 'p')
 #define MOV_MP4_FPCM_TAG  MKTAG('f', 'p', 'c', 'm')
 #define MOV_MP4_IPCM_TAG  MKTAG('i', 'p', 'c', 'm')
+
+#define MOV_MP4_DJMD_TAG  MKTAG('d', 'j', 'm', 'd')
+#define MOV_MP4_DBGI_TAG  MKTAG('d', 'b', 'g', 'i')
 
 struct MP4TrackKindValueMapping {
     int         disposition;

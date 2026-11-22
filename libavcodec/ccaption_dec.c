@@ -108,14 +108,14 @@ enum cc_charset {
         ENTRY(0x23, "\u00da")                            \
         ENTRY(0x24, "\u00dc")                            \
         ENTRY(0x25, "\u00fc")                            \
-        ENTRY(0x26, "\u00b4")                            \
+        ENTRY(0x26, "\u2018")                            \
         ENTRY(0x27, "\u00a1")                            \
         ENTRY(0x28, "*")                                 \
-        ENTRY(0x29, "\u2018")                            \
-        ENTRY(0x2a, "-")                                 \
+        ENTRY(0x29, "'")                                 \
+        ENTRY(0x2a, "\u2014")                            \
         ENTRY(0x2b, "\u00a9")                            \
         ENTRY(0x2c, "\u2120")                            \
-        ENTRY(0x2d, "\u00b7")                            \
+        ENTRY(0x2d, "\u2022")                            \
         ENTRY(0x2e, "\u201c")                            \
         ENTRY(0x2f, "\u201d")                            \
         ENTRY(0x30, "\u00c0")                            \

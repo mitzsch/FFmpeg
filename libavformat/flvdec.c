@@ -36,6 +36,7 @@
 #include "libavutil/intreadwrite.h"
 #include "libavutil/mastering_display_metadata.h"
 #include "avformat.h"
+#include "avio_internal.h"
 #include "demux.h"
 #include "internal.h"
 #include "flv.h"
@@ -718,13 +719,14 @@ static int amf_parse_object(AVFormatContext *s, AVStream *astream,
         if (depth == 1) {
             if (amf_type == AMF_DATA_TYPE_NUMBER ||
                 amf_type == AMF_DATA_TYPE_BOOL) {
-                if (!strcmp(key, "duration"))
+                if (!strcmp(key, "duration") &&
+                    num_val >= 0 && num_val < INT64_MAX / AV_TIME_BASE)
                     s->duration = num_val * AV_TIME_BASE;
                 else if (!strcmp(key, "videodatarate") &&
-                         0 <= (int)(num_val * 1024.0))
+                         0 <= num_val && num_val < INT_MAX / 1024.0)
                     flv->video_bit_rate = num_val * 1024.0;
                 else if (!strcmp(key, "audiodatarate") &&
-                         0 <= (int)(num_val * 1024.0))
+                         0 <= num_val && num_val < INT_MAX / 1024.0)
                     flv->audio_bit_rate = num_val * 1024.0;
                 else if (!strcmp(key, "framerate")) {
                     flv->framerate = av_d2q(num_val, 1000);
@@ -1342,7 +1344,7 @@ static int flv_parse_mod_ex_data(AVFormatContext *s, int *pkt_type, int *size, i
     if (!ex_data)
         return AVERROR(ENOMEM);
 
-    ret = avio_read(s->pb, ex_data, ex_size);
+    ret = ffio_read_size(s->pb, ex_data, ex_size);
     if (ret < 0) {
         av_free(ex_data);
         return ret;
@@ -1563,6 +1565,10 @@ skip:
         goto leave;
     }
 
+    if (flv->time_pos <= pos) {
+        dts += flv->time_offset;
+    }
+
     for (;;) {
         int track_size = size;
         if (size < 0) {
@@ -1603,10 +1609,6 @@ skip:
                 return AVERROR(ENOMEM);
         }
         av_log(s, AV_LOG_TRACE, "%d %X %d \n", stream_type, flags, st->discard);
-
-        if (flv->time_pos <= pos) {
-            dts += flv->time_offset;
-        }
 
         if ((s->pb->seekable & AVIO_SEEKABLE_NORMAL) &&
             ((flags & FLV_VIDEO_FRAMETYPE_MASK) == FLV_FRAME_KEY ||

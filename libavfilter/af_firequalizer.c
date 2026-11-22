@@ -542,6 +542,8 @@ static void generate_min_phase_kernel(FIREqualizerContext *s, float *rdft_buf)
     double norm = 2.0 / cepstrum_len;
     double minval = 1e-7 / rdft_len;
 
+    av_assert0(cepstrum_len >= 2);
+
     memset(s->cepstrum_buf, 0, cepstrum_len * sizeof(*s->cepstrum_buf));
     memset(s->cepstrum_tbuf, 0, (cepstrum_len + 2) * sizeof(*s->cepstrum_tbuf));
     memcpy(s->cepstrum_buf, rdft_buf, rdft_len/2 * sizeof(*rdft_buf));
@@ -747,7 +749,7 @@ static int config_input(AVFilterLink *inlink)
     for (rdft_bits = RDFT_BITS_MIN; rdft_bits <= RDFT_BITS_MAX; rdft_bits++) {
         s->rdft_len = 1 << rdft_bits;
         s->nsamples_max = s->rdft_len - s->fir_len + 1;
-        if (s->nsamples_max * 2 >= s->fir_len)
+        if ((int64_t)s->nsamples_max * 2 >= s->fir_len)
             break;
     }
 

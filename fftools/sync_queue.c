@@ -298,8 +298,18 @@ static int overflow_heartbeat(SyncQueue *sq, int stream_idx)
 
     /* get the chosen stream's tail timestamp */
     for (size_t i = 0; tail_ts == AV_NOPTS_VALUE &&
-                       av_container_fifo_peek(st->fifo, (void**)&frame, i) >= 0; i++)
-        tail_ts = frame_end(sq, frame, 0);
+                       av_container_fifo_peek(st->fifo, (void**)&frame, i) >= 0; i++) {
+        int nb_samples = 0;
+
+        /* Use the chunk end from receive_for_stream() only when the queued
+         * frame is shorter than the encoder frame size; otherwise keep the
+         * frame's own end timestamp. */
+        if (sq->type == SYNC_QUEUE_FRAMES &&
+            frame.f->nb_samples < st->frame_samples)
+            nb_samples = st->frame_samples;
+
+        tail_ts = frame_end(sq, frame, nb_samples);
+    }
 
     /* overflow triggers when the tail is over specified duration behind the head */
     if (tail_ts == AV_NOPTS_VALUE || tail_ts >= st->head_ts ||
@@ -513,7 +523,7 @@ static int receive_for_stream(SyncQueue *sq, unsigned int stream_idx,
         (st->frame_samples <= st->samples_queued || st->finished)) {
         int nb_samples = st->frame_samples;
         SyncQueueFrame peek;
-        int64_t ts;
+        int64_t ts, end = 0, cut = 0;
         int cmp = 1;
 
         if (st->finished)
@@ -524,14 +534,28 @@ static int receive_for_stream(SyncQueue *sq, unsigned int stream_idx,
 
         /* check if this stream's tail timestamp does not overtake
          * the overall queue head */
-        if (ts != AV_NOPTS_VALUE && st_head)
+        if (ts != AV_NOPTS_VALUE && st_head) {
             cmp = av_compare_ts(ts, st->tb, st_head->head_ts, st_head->tb);
+
+            /* A frame ending after the final queue head is cut there when
+             * the encoder takes any number of samples, so that the stream
+             * does not end up to a frame before the limiting one. */
+            if (cmp > 0 && st_head->finished && !st->frame_samples &&
+                frame_samples(sq, peek)) {
+                AVRational sample_tb = { 1, peek.f->sample_rate };
+
+                end = av_rescale_q(st_head->head_ts, st_head->tb, st->tb);
+                cut = av_rescale_q(st_head->head_ts, st_head->tb, sample_tb) -
+                      av_rescale_q(peek.f->pts, st->tb, sample_tb);
+                cut = FFMIN(cut, peek.f->nb_samples);
+            }
+        }
 
         /* We can release frames that do not end after the queue head.
          * Frames with no timestamps are just passed through with no conditions.
          * Frames are also passed through when there are no limiting streams.
          */
-        if (cmp <= 0 || ts == AV_NOPTS_VALUE || !sq->have_limiting) {
+        if (cmp <= 0 || ts == AV_NOPTS_VALUE || !sq->have_limiting || cut > 0) {
             if (nb_samples &&
                 (nb_samples != peek.f->nb_samples || !frame_is_aligned(sq, peek.f))) {
                 int ret = receive_samples(sq, st, frame.f, nb_samples);
@@ -543,6 +567,11 @@ static int receive_for_stream(SyncQueue *sq, unsigned int stream_idx,
 
                 av_assert0(st->samples_queued >= frame_samples(sq, frame));
                 st->samples_queued -= frame_samples(sq, frame);
+
+                if (cut > 0) {
+                    frame.f->nb_samples = cut;
+                    frame.f->duration   = end - frame.f->pts;
+                }
             }
 
             av_log(sq->logctx, AV_LOG_DEBUG,

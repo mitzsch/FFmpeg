@@ -19,6 +19,9 @@ fate-ffmpeg-lavfi: CMD = framecrc -lavfi color=d=1:r=5 -fflags +bitexact
 FATE_FFMPEG-$(call FILTERFRAMECRC, TESTSRC2 FORMAT SETPARAMS SCALE, LAVFI_INDEV WRAPPED_AVFRAME_DECODER MPEG2VIDEO_ENCODER) += fate-ffmpeg-chroma-location
 fate-ffmpeg-chroma-location: CMD = framecrc -auto_conversion_filters -f lavfi -i testsrc2=s=64x64:r=25:d=1,format=yuv420p,setparams=chroma_location=topleft -sws_flags +accurate_rnd+bitexact -flags +bitexact -idct simple -dct fastint -threads 1 -c:v mpeg2video -qscale:v 2 -frames:v 1
 
+FATE_FFMPEG-$(call FILTERFRAMECRC, TESTSRC2 FORMAT, LAVFI_INDEV WRAPPED_AVFRAME_DECODER SPEEDHQ_ENCODER) += fate-ffmpeg-speedhq-444-psnr
+fate-ffmpeg-speedhq-444-psnr: CMD = framecrc -f lavfi -i testsrc2=s=128x64:r=25:d=1,format=yuv444p -flags +bitexact+psnr -idct simple -dct fastint -threads 1 -c:v speedhq -qscale:v 3 -frames:v 1
+
 FATE_FFMPEG-$(if $(CONFIG_SMALL),no,$(call ALLYES, TESTSRC2_FILTER SCALE_FILTER FORMAT_FILTER LAVFI_INDEV WRAPPED_AVFRAME_DECODER RAWVIDEO_ENCODER NULL_MUXER)) += fate-ffmpeg-print-graphs-compact
 fate-ffmpeg-print-graphs-compact: CMD = ffmpeg -f lavfi -i testsrc2=s=64x64:r=25:d=0.08 -filter_complex "[0:v]scale=32:32,format=yuv420p[v]" -map "[v]" -c:v rawvideo -print_graphs_file - -print_graphs_format compact -f null -
 
@@ -106,6 +109,39 @@ FATE_FFMPEG-$(call FILTERDEMDEC, AMIX ARESAMPLE SINE, RAWVIDEO, \
                            += fate-shortest
 fate-shortest: tests/data/vsynth1.yuv
 fate-shortest: CMD = framecrc -auto_conversion_filters -f lavfi -i "sine=3000:d=10" -f lavfi -i "sine=1000:d=1" -sws_flags +accurate_rnd+bitexact -fflags +bitexact -flags +bitexact -idct simple -f rawvideo -s 352x288 -pix_fmt yuv420p -i $(TARGET_PATH)/tests/data/vsynth1.yuv -filter_complex "[0:a:0][1:a:0]amix=inputs=2[audio]" -map 2:v:0 -map "[audio]" -sws_flags +accurate_rnd+bitexact -fflags +bitexact -flags +bitexact -idct simple -dct fastint -qscale 10 -threads 1 -c:v mpeg4 -c:a ac3_fixed -shortest
+
+# -shortest used to stall when the audio frames reaching the sync queue were
+# smaller than the encoder frame size: the audio FIFO grew until
+# av_fifo_write() returned ENOSPC. Both sources share one lavfi input:
+# video produces two frames, but input EOF waits for the audio sink too,
+# so audio can run ahead without -re. d=45 (360000 frames at n=1) leaves
+# room for frames drained by the heartbeat over the 1 MiB / sizeof(void*)
+# FIFO limit (262144 entries on 32-bit, 131072 on 64-bit).
+FATE_FFMPEG-$(call ALLYES, LAVFI_INDEV COLOR_FILTER ANULLSRC_FILTER \
+                           ARESAMPLE_FILTER AFORMAT_FILTER \
+                           FORMAT_FILTER PCM_U8_DECODER \
+                           WRAPPED_AVFRAME_DECODER MPEG4_ENCODER \
+                           AAC_ENCODER NULL_MUXER) \
+                           += fate-ffmpeg-shortest-small-audio-frames
+fate-ffmpeg-shortest-small-audio-frames: CMP = null
+fate-ffmpeg-shortest-small-audio-frames: CMD = ffmpeg -auto_conversion_filters \
+    -f lavfi -i "color=s=16x16:r=1:d=2[out0];anullsrc=r=8000:cl=mono:n=1:d=45[out1]" \
+    -map 0:v -map 0:a -c:v mpeg4 -c:a aac -shortest -shortest_buf_duration 0.1 -f null -
+
+# The audio frame extending past the end of a frame-limited video stream is
+# cut there, it used to be dropped, making the audio up to a frame too short.
+FATE_FFMPEG-$(call ALLYES, LAVFI_INDEV COLOR_FILTER SINE_FILTER \
+                           WRAPPED_AVFRAME_DECODER PCM_S16LE_DECODER \
+                           RAWVIDEO_ENCODER PCM_S16LE_ENCODER FRAMECRC_MUXER \
+                           PIPE_PROTOCOL) \
+                           += fate-ffmpeg-frames-cut-audio fate-ffmpeg-frames-cut-audio-round
+fate-ffmpeg-frames-cut-audio: CMD = framecrc \
+    -f lavfi -i "color=s=16x16:r=30000/1001:d=2[out0];sine=r=48000:samples_per_frame=4800:d=2[out1]" \
+    -map 0:v -map 0:a -frames:v 10
+# the end, 1601.6 samples, rounds to the whole frame
+fate-ffmpeg-frames-cut-audio-round: CMD = framecrc \
+    -f lavfi -i "color=s=16x16:r=30000/1001:d=2[out0];sine=r=48000:samples_per_frame=1602:d=2[out1]" \
+    -map 0:v -map 0:a -frames:v 1
 
 # test interleaving video with a sparse subtitle stream
 FATE_SAMPLES_FFMPEG-$(call FRAMECRC, MATROSKA,, COLOR_FILTER VOBSUB_DEMUXER \
@@ -300,6 +336,25 @@ fate-ffmpeg-trim-bsf-priming-duration: CMD = framecrc -copyts -i $(TARGET_SAMPLE
 FATE_SAMPLES_FFMPEG-$(call DEMMUX, MOV, FRAMECRC, TRIM_BSF PIPE_PROTOCOL) += fate-ffmpeg-trim-bsf-priming-untrimmed
 fate-ffmpeg-trim-bsf-priming-untrimmed: CMD = framecrc -copyts -i $(TARGET_SAMPLES)/audiomatch/tones_afconvert_16000_mono_aac_lc.m4a -c:a copy -bsf:a trim=start=1:start_type=pkt_index:trim_packets=0 -frames:a 3
 
+FATE_SAMPLES_FFMPEG-$(call DEMMUX, MOV, FRAMECRC, SIDE_DATA_BSF PIPE_PROTOCOL) += fate-ffmpeg-side-data-bsf-remove
+fate-ffmpeg-side-data-bsf-remove: CMD = framecrc -i $(TARGET_SAMPLES)/audiomatch/tones_afconvert_16000_mono_aac_lc.m4a -c:a copy -bsf:a side_data=remove=skip_samples -frames:a 2
+
+# Only the first and the last packets carry skip samples: the priming and the
+# padding.
+FATE_SAMPLES_FFMPEG-$(call DEMMUX, MOV, FRAMECRC, SIDE_DATA_BSF PIPE_PROTOCOL) += fate-ffmpeg-side-data-bsf-select
+fate-ffmpeg-side-data-bsf-select: CMD = framecrc -i $(TARGET_SAMPLES)/audiomatch/tones_afconvert_16000_mono_aac_lc.m4a -c:a copy -bsf:a side_data=select=skip_samples -frames:a 2
+
+FATE_SAMPLES_FFMPEG-$(call DEMMUX, MOV, FRAMECRC, SIDE_DATA_BSF PIPE_PROTOCOL) += fate-ffmpeg-side-data-bsf-select-none
+fate-ffmpeg-side-data-bsf-select-none: CMD = framecrc -i $(TARGET_SAMPLES)/audiomatch/tones_afconvert_16000_mono_aac_lc.m4a -c:a copy -bsf:a side_data=select=palette -frames:a 2
+
+# The display matrix is stream side data, which ffprobe shows on the output.
+# Removing another type keeps it.
+FATE_SAMPLES_FFMPEG_FFPROBE-$(call REMUX, MOV, SIDE_DATA_BSF) += fate-ffmpeg-side-data-bsf-keep-stream
+fate-ffmpeg-side-data-bsf-keep-stream: CMD = transcode mov $(TARGET_SAMPLES)/filter/sample-in-issue-505.mov mov "-c copy -an -t 0.5 -bsf:v side_data=remove=palette" "-c copy" "-select_streams v -show_entries stream_side_data_list"
+
+FATE_SAMPLES_FFMPEG_FFPROBE-$(call REMUX, MOV, SIDE_DATA_BSF) += fate-ffmpeg-side-data-bsf-remove-stream
+fate-ffmpeg-side-data-bsf-remove-stream: CMD = transcode mov $(TARGET_SAMPLES)/filter/sample-in-issue-505.mov mov "-c copy -an -t 0.5 -bsf:v side_data=remove=displaymatrix" "-c copy" "-select_streams v -show_entries stream_side_data_list"
+
 # The composed skips cover 800 + 300 of the 1024 samples, leaving nothing.
 FATE_SAMPLES_FFMPEG-$(call DEMMUX, AAC, FRAMECRC, AAC_PARSER TRIM_BSF PIPE_PROTOCOL) += fate-ffmpeg-trim-bsf-skip-samples-empty
 fate-ffmpeg-trim-bsf-skip-samples-empty: CMD = framecrc -i $(TARGET_SAMPLES)/audiomatch/tones_afconvert_16000_mono_aac_lc.adts -c:a copy -bsf:a trim=start=3217536,trim=end=3083472
@@ -393,7 +448,7 @@ FATE_FFMPEG-$(call ALLYES, LAVFI_INDEV ANULLSRC_FILTER PCM_U8_DECODER PCM_U8_ENC
 # test input -bsf
 # use -stream_loop, because it tests flushing bsfs
 fate-ffmpeg-bsf-input: CMD = framecrc -stream_loop 2 -bsf setts=PTS*2 -i $(TARGET_SAMPLES)/hevc/extradata-reload-multi-stsd.mov -c copy
-FATE_SAMPLES_FFMPEG-$(call FRAMECRC, MOV, , SETTS_BSF) += fate-ffmpeg-bsf-input
+FATE_SAMPLES_FFMPEG-$(call FRAMECRC, MOV, HEVC, SETTS_BSF) += fate-ffmpeg-bsf-input
 
 # Test behaviour when a complex filtergraph returns EOF on one of its inputs,
 # but other inputs are still active.
@@ -404,6 +459,22 @@ fate-ffmpeg-filter-in-eof: CMD = framecrc                                       
     -f rawvideo -s 352x288 -pix_fmt yuv420p -t 1 -i $(TARGET_PATH)/tests/data/vsynth1.yuv  \
     -filter_complex "[0][1]concat" -c:v rawvideo
 FATE_FFMPEG-$(call FRAMECRC, RAWVIDEO, RAWVIDEO, CONCAT_FILTER) += fate-ffmpeg-filter-in-eof
+
+# Test that the CLI does not deadlock when a filtergraph closes one of its
+# looped inputs (here via trim returning EOF) while other inputs are still
+# active; the closed input must no longer be chosen for receiving frames.
+# cf. #25548
+fate-ffmpeg-filter-closed-input: tests/data/vsynth1.yuv
+fate-ffmpeg-filter-closed-input: CMD = framecrc -auto_conversion_filters -filter_complex_threads 1 \
+    -stream_loop -1 -f rawvideo -s 352x288 -pix_fmt yuv420p -i $(TARGET_PATH)/tests/data/vsynth1.yuv \
+    -stream_loop -1 -f rawvideo -s 352x288 -pix_fmt yuv420p -i $(TARGET_PATH)/tests/data/vsynth1.yuv \
+    -stream_loop -1 -f rawvideo -s 352x288 -pix_fmt yuv420p -i $(TARGET_PATH)/tests/data/vsynth1.yuv \
+    -stream_loop -1 -f rawvideo -s 352x288 -pix_fmt yuv420p -i $(TARGET_PATH)/tests/data/vsynth1.yuv \
+    -filter_complex "[2:v][1:v]scale2ref=w=iw:h=ih[m][s1];[3:v][s1]scale2ref=w=iw:h=ih[f][s2];[f][m]alphamerge[k];[s2]vflip[bg];[bg][k]overlay=format=yuv420,null,null,null,null,null,null,null,null,trim=duration=1.64,setpts=PTS-STARTPTS[l];[0:v][l]overlay=format=yuv420:eof_action=pass[v]" \
+    -map "[v]" -t 3 -c:v rawvideo
+FATE_FFMPEG-$(call FRAMECRC, RAWVIDEO, RAWVIDEO, SCALE_FILTER SCALE2REF_FILTER \
+    ALPHAMERGE_FILTER VFLIP_FILTER OVERLAY_FILTER NULL_FILTER TRIM_FILTER      \
+    SETPTS_FILTER) += fate-ffmpeg-filter-closed-input
 
 # Test termination on streamcopy with -t as an output option.
 fate-ffmpeg-streamcopy-t: tests/data/vsynth1.yuv
@@ -434,6 +505,23 @@ fate-ffmpeg-loopback-decoding: CMD = transcode \
     "-map 0:v:0 -c:v mpeg2video -f null - -flags +bitexact -idct simple -threads $$threads -dec 0:0 -filter_complex '[0:v][dec:0]hstack[stack]' -map '[stack]' -c:v ffv1" ""
 FATE_FFMPEG-$(call ENCDEC2, MPEG2VIDEO, FFV1, NUT, HSTACK_FILTER PIPE_PROTOCOL FRAMECRC_MUXER) += fate-ffmpeg-loopback-decoding
 
+# Test sequence end with a partial B-frame chain and with queued B-frames.
+FATE_FFMPEG-$(call ENCMUX, MPEG2VIDEO, MPEG2VIDEO, TESTSRC2_FILTER FILE_PROTOCOL) += fate-mpeg2-seq-end-short fate-mpeg2-seq-end-bframes
+fate-mpeg2-seq-end-short: CMD = md5 -filter_complex testsrc2=s=64x64:r=25:d=0.08 -c:v mpeg2video -flags +bitexact -dct fastint -q:v 2 -bf 2 -seq_end 1 -f mpeg2video
+fate-mpeg2-seq-end-bframes: CMD = md5 -filter_complex testsrc2=s=64x64:r=25:d=0.12 -c:v mpeg2video -flags +bitexact -dct fastint -q:v 2 -bf 1 -seq_end 1 -f mpeg2video
+
+# Account for the end code before calculating CBR stuffing and vbv_delay.
+FATE_FFMPEG-$(call ENCMUX, MPEG2VIDEO, MPEG2VIDEO, COLOR_FILTER FILE_PROTOCOL) += fate-mpeg2-seq-end-cbr
+fate-mpeg2-seq-end-cbr: CMD = md5 -filter_complex color=s=64x64:r=25:d=0.08 -c:v mpeg2video -flags +bitexact -dct fastint -b:v 90000 -minrate 90000 -maxrate 90000 -bufsize 65536 -rc_init_occupancy 65536 -seq_end 1 -f mpeg2video
+
+# Skipping the last queued picture would leave no packet for the end code.
+FATE_FFMPEG-$(call ENCMUX, MPEG2VIDEO, MPEG2VIDEO, COLOR_FILTER PIPE_PROTOCOL) += fate-mpeg2-seq-end-skip-threshold fate-mpeg2-seq-end-skip-factor
+fate-mpeg2-seq-end-skip-threshold: SKIP_OPT = skip_threshold
+fate-mpeg2-seq-end-skip-factor: SKIP_OPT = skip_factor
+fate-mpeg2-seq-end-skip-threshold fate-mpeg2-seq-end-skip-factor: CMP = grep
+fate-mpeg2-seq-end-skip-threshold fate-mpeg2-seq-end-skip-factor: REF = Sequence end code is not supported with frame skipping
+fate-mpeg2-seq-end-skip-threshold fate-mpeg2-seq-end-skip-factor: CMD = ffmpeg -filter_complex color=s=64x64:r=25:d=0.08 -c:v mpeg2video -$(SKIP_OPT) 1 -seq_end 1 -f mpeg2video -; test $$? -ne 0
+
 # test matching by stream disposition
 fate-ffmpeg-spec-disposition: CMD = framecrc -i $(TARGET_SAMPLES)/mpegts/pmtchange.ts -map '0:disp:visual_impaired+descriptions:1' -c copy
 FATE_SAMPLES_FFMPEG-$(call FRAMECRC, MPEGTS,,) += fate-ffmpeg-spec-disposition
@@ -450,3 +538,7 @@ FATE_SAMPLES_FFMPEG-$(call FRAMECRC, MOV, HEVC, HEVC_PARSER) += fate-ffmpeg-heif
 # binding the internal filtegraph with a caller defined filtergraph
 fate-ffmpeg-heif-merge-filtergraph: CMD = framecrc -i $(TARGET_SAMPLES)/heif-conformance/C007.heic -filter_complex "sws_flags=+accurate_rnd+bitexact\;[0:g:0]scale=w=1280:h=720[out]" -map "[out]"
 FATE_SAMPLES_FFMPEG-$(call FRAMECRC, MOV, HEVC, HEVC_PARSER SCALE_FILTER) += fate-ffmpeg-heif-merge-filtergraph
+
+# alpha merging
+fate-ffmpeg-heif-merge-alpha: CMD = framecrc -auto_conversion_filters -i $(TARGET_SAMPLES)/heif/alpha.heic
+FATE_SAMPLES_FFMPEG-$(call FRAMECRC, MOV, HEVC, HEVC_PARSER SCALE_FILTER) += fate-ffmpeg-heif-merge-alpha
