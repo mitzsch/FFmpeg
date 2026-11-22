@@ -180,7 +180,9 @@ static int read_shape_from_file(int *cols, int *rows, int **values, const char *
     pend = buf + size-1;
     for (i = 0; i < *rows; i++) {
         for (j = 0;; j++) {
-            if (p > pend || *p == '\n') {
+            if (p > pend)
+                break;
+            if (*p == '\n') {
                 p++;
                 break;
             } else
@@ -236,6 +238,12 @@ static int parse_iplconvkernel(IplConvKernel **kernel, char *buf, void *log_ctx)
     if (rows <= 0 || cols <= 0) {
         av_log(log_ctx, AV_LOG_ERROR,
                "Invalid non-positive values for shape size %dx%d\n", cols, rows);
+        ret = AVERROR(EINVAL);
+        goto out;
+    }
+
+    if (rows > (INT_MAX - sizeof(IplConvKernel) - 32) / sizeof(int) / cols) {
+        av_log(log_ctx, AV_LOG_ERROR, "Shape size %dx%d is too big\n", cols, rows);
         ret = AVERROR(EINVAL);
         goto out;
     }

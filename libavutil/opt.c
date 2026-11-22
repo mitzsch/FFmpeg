@@ -505,11 +505,20 @@ static int set_string_number(void *obj, void *target_obj, const AVOption *o, con
             }
         }
         if (type == AV_OPT_TYPE_FLAGS && dst) {
+            unsigned int operand;
+            /* Validate the operand of a '+' or '-' update and let
+             * write_number() convert it: casting a double outside the
+             * int64_t range (or inf/nan) to int64_t is undefined behaviour,
+             * and the cast would also drop a fractional part that
+             * write_number() is meant to reject, so "+1.5" used to be
+             * accepted while "1.5" is refused. */
+            if (cmd && (ret = write_number(obj, o, &operand, d, 1, 1, 0)) < 0)
+                return ret;
             intnum = *(unsigned int*)dst;
             if (cmd == '+')
-                d = intnum | (int64_t)d;
+                d = intnum | operand;
             else if (cmd == '-')
-                d = intnum &~(int64_t)d;
+                d = intnum &~operand;
         }
 
         if ((ret = write_number(obj, o, dst, d, 1, 1, 0)) < 0)
@@ -534,8 +543,10 @@ static int set_string_image_size(void *obj, const AVOption *o, const char *val, 
         return 0;
     }
     ret = av_parse_video_size(&tmp[0], &tmp[1], val);
-    if (ret < 0)
+    if (ret < 0) {
         av_log(logctx, AV_LOG_ERROR, "Unable to parse \"%s\" option value \"%s\" as image size\n", o->name, val);
+        return ret;
+    }
     if (dst)
         memcpy(dst, tmp, sizeof(tmp));
     return ret;
@@ -563,8 +574,10 @@ static int set_string_color(void *obj, const AVOption *o, const char *val, uint8
     } else {
         uint8_t tmp[4];
         ret = av_parse_color(tmp, val, -1, obj);
-        if (ret < 0)
+        if (ret < 0) {
             av_log(logctx, AV_LOG_ERROR, "Unable to parse \"%s\" option value \"%s\" as color\n", o->name, val);
+            return ret;
+        }
         if (dst)
             memcpy(dst, tmp, sizeof(tmp));
         return ret;

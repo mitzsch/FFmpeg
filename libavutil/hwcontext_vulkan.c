@@ -2403,6 +2403,51 @@ static int alloc_mem(AVHWDeviceContext *ctx, VkMemoryRequirements *req,
     return 0;
 }
 
+#if CONFIG_CUDA
+static void vulkan_free_internal_cuda(AVVkFrameInternal *internal)
+{
+    AVHWFramesContext *cuda_fc;
+    AVHWDeviceContext *cuda_cu;
+    AVCUDADeviceContext *cuda_dev;
+    AVCUDADeviceContextInternal *cu_internal;
+    CudaFunctions *cu;
+    int planes;
+
+    if (!internal->cuda_fc_ref)
+        return;
+
+    cuda_fc = (AVHWFramesContext *)internal->cuda_fc_ref->data;
+    planes = av_pix_fmt_count_planes(cuda_fc->sw_format);
+    cuda_cu = cuda_fc->device_ctx;
+    cuda_dev = cuda_cu->hwctx;
+    cu_internal = cuda_dev->internal;
+    cu = cu_internal->cuda_dl;
+
+    for (int i = 0; i < planes; i++) {
+        if (internal->cu_sem[i])
+            CHECK_CU(cu->cuDestroyExternalSemaphore(internal->cu_sem[i]));
+        if (internal->cu_mma[i])
+            CHECK_CU(cu->cuMipmappedArrayDestroy(internal->cu_mma[i]));
+        if (internal->ext_mem[i])
+            CHECK_CU(cu->cuDestroyExternalMemory(internal->ext_mem[i]));
+        internal->cu_sem[i]   = NULL;
+        internal->cu_mma[i]   = NULL;
+        internal->cu_array[i] = NULL;
+        internal->ext_mem[i]  = NULL;
+#ifdef _WIN32
+        if (internal->ext_sem_handle[i])
+            CloseHandle(internal->ext_sem_handle[i]);
+        if (internal->ext_mem_handle[i])
+            CloseHandle(internal->ext_mem_handle[i]);
+        internal->ext_sem_handle[i] = NULL;
+        internal->ext_mem_handle[i] = NULL;
+#endif
+    }
+
+    av_buffer_unref(&internal->cuda_fc_ref);
+}
+#endif
+
 static void vulkan_free_internal(VulkanDevicePriv *p, AVVkFrame *f)
 {
     av_unused AVVkFrameInternal *internal = f->internal;
@@ -2412,31 +2457,7 @@ static void vulkan_free_internal(VulkanDevicePriv *p, AVVkFrame *f)
         return;
 
 #if CONFIG_CUDA
-    if (internal->cuda_fc_ref) {
-        AVHWFramesContext *cuda_fc = (AVHWFramesContext *)internal->cuda_fc_ref->data;
-        int planes = av_pix_fmt_count_planes(cuda_fc->sw_format);
-        AVHWDeviceContext *cuda_cu = cuda_fc->device_ctx;
-        AVCUDADeviceContext *cuda_dev = cuda_cu->hwctx;
-        AVCUDADeviceContextInternal *cu_internal = cuda_dev->internal;
-        CudaFunctions *cu = cu_internal->cuda_dl;
-
-        for (int i = 0; i < planes; i++) {
-            if (internal->cu_sem[i])
-                CHECK_CU(cu->cuDestroyExternalSemaphore(internal->cu_sem[i]));
-            if (internal->cu_mma[i])
-                CHECK_CU(cu->cuMipmappedArrayDestroy(internal->cu_mma[i]));
-            if (internal->ext_mem[i])
-                CHECK_CU(cu->cuDestroyExternalMemory(internal->ext_mem[i]));
-#ifdef _WIN32
-            if (internal->ext_sem_handle[i])
-                CloseHandle(internal->ext_sem_handle[i]);
-            if (internal->ext_mem_handle[i])
-                CloseHandle(internal->ext_mem_handle[i]);
-#endif
-        }
-
-        av_buffer_unref(&internal->cuda_fc_ref);
-    }
+    vulkan_free_internal_cuda(internal);
 #endif
 
     if (internal->drm_sync_sem != VK_NULL_HANDLE)
@@ -2644,8 +2665,10 @@ static int switch_layout(AVHWFramesContext *hwfc, FFVkExecPool *ectx,
     if (err < 0)
         return err;
 
+    /* NONE does not block any stage, so this queue's layout transition
+     * races a decode write submitted on the video queue. */
     err = ff_vk_exec_add_dep_frame(&p->vkctx, exec, &tmp_frame,
-                                   VK_PIPELINE_STAGE_2_NONE,
+                                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     if (err < 0)
         return err;
@@ -3920,8 +3943,13 @@ static int vulkan_map_from_drm_frame_sync(AVHWFramesContext *hwfc, AVFrame *dst,
                                     drm_sync_sem, desc->nb_objects,
                                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 1);
 
+        /* The imported DRM sync file only orders the external data, not this
+         * frame's earlier use by FFmpeg. The frame may be recycled from the
+         * pool while it is still in flight (and last used on another queue),
+         * so the map waits on its last signal, at ALL_COMMANDS, to be ordered
+         * after that previous use. */
         err = ff_vk_exec_add_dep_frame(&p->vkctx, exec, dst,
-                                       VK_PIPELINE_STAGE_2_NONE,
+                                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
         if (err < 0) {
             ff_vk_exec_discard(&p->vkctx, exec);
@@ -4268,7 +4296,9 @@ static int vulkan_export_to_cuda(AVHWFramesContext *hwfc,
     return 0;
 
 fail:
-    vulkan_free_internal(p, dst_f);
+    /* Only the import failed: the frame is still valid and stays in its pool,
+     * and the next transfer starts the import over. */
+    vulkan_free_internal_cuda(dst_int);
     return err;
 }
 
@@ -4279,7 +4309,6 @@ static int vulkan_transfer_data_from_cuda(AVHWFramesContext *hwfc,
     CUcontext dummy;
     AVVkFrame *dst_f;
     AVVkFrameInternal *dst_int;
-    VulkanDevicePriv *p = hwfc->device_ctx->hwctx;
     VulkanFramesPriv *fp = hwfc->hwctx;
     const int planes = av_pix_fmt_count_planes(hwfc->sw_format);
     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(hwfc->sw_format);
@@ -4305,10 +4334,8 @@ static int vulkan_transfer_data_from_cuda(AVHWFramesContext *hwfc,
         return err;
 
     err = vulkan_export_to_cuda(hwfc, src->hw_frames_ctx, dst);
-    if (err < 0) {
-        CHECK_CU(cu->cuCtxPopCurrent(&dummy));
-        return err;
-    }
+    if (err < 0)
+        goto fail;
 
     dst_int = dst_f->internal;
 
@@ -4359,9 +4386,11 @@ static int vulkan_transfer_data_from_cuda(AVHWFramesContext *hwfc,
     return err = prepare_frame(hwfc, &fp->upload_exec, dst_f, PREP_MODE_EXTERNAL_IMPORT);
 
 fail:
+    /* Commands queued before the failure may still use the image, and the
+     * frame stays usable, so return it the way a successful transfer does. */
+    CHECK_CU(cu->cuStreamSynchronize(cuda_dev->stream));
     CHECK_CU(cu->cuCtxPopCurrent(&dummy));
-    vulkan_free_internal(p, dst_f);
-    av_buffer_unref(&dst->buf[0]);
+    prepare_frame(hwfc, &fp->upload_exec, dst_f, PREP_MODE_EXTERNAL_IMPORT);
     return err;
 }
 #endif
@@ -4718,6 +4747,15 @@ static int copy_buffer_data(AVHWFramesContext *hwfc, FFVkBuffer *vkbuf,
 {
     int err;
     VulkanDevicePriv *p = hwfc->device_ctx->hwctx;
+    int bytewidth[AV_NUM_DATA_POINTERS];
+
+    /* Copy only the visible bytes of each row, the last row of a plane
+     * does not have to extend to the full linesize. */
+    for (int i = 0; i < planes; i++) {
+        bytewidth[i] = av_image_get_linesize(swf->format, swf->width, i);
+        if (bytewidth[i] < 0)
+            return bytewidth[i];
+    }
 
     if (upload) {
         for (int i = 0; i < planes; i++)
@@ -4725,7 +4763,7 @@ static int copy_buffer_data(AVHWFramesContext *hwfc, FFVkBuffer *vkbuf,
                                 region[i].bufferRowLength,
                                 swf->data[i],
                                 swf->linesize[i],
-                                FFABS(swf->linesize[i]),
+                                bytewidth[i],
                                 region[i].imageExtent.height);
 
         err = ff_vk_flush_buffer(&p->vkctx, vkbuf, 0, VK_WHOLE_SIZE, 1);
@@ -4747,7 +4785,7 @@ static int copy_buffer_data(AVHWFramesContext *hwfc, FFVkBuffer *vkbuf,
                                 swf->linesize[i],
                                 vkbuf->mapped_mem + region[i].bufferOffset,
                                 region[i].bufferRowLength,
-                                FFABS(swf->linesize[i]),
+                                bytewidth[i],
                                 region[i].imageExtent.height);
     }
 
@@ -5198,7 +5236,6 @@ static int vulkan_transfer_data_to_cuda(AVHWFramesContext *hwfc, AVFrame *dst,
     CUcontext dummy;
     AVVkFrame *dst_f;
     AVVkFrameInternal *dst_int;
-    VulkanDevicePriv *p = hwfc->device_ctx->hwctx;
     VulkanFramesPriv *fp = hwfc->hwctx;
     const int planes = av_pix_fmt_count_planes(hwfc->sw_format);
     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(hwfc->sw_format);
@@ -5224,10 +5261,8 @@ static int vulkan_transfer_data_to_cuda(AVHWFramesContext *hwfc, AVFrame *dst,
         return err;
 
     err = vulkan_export_to_cuda(hwfc, dst->hw_frames_ctx, src);
-    if (err < 0) {
-        CHECK_CU(cu->cuCtxPopCurrent(&dummy));
-        return err;
-    }
+    if (err < 0)
+        goto fail;
 
     dst_int = dst_f->internal;
 
@@ -5278,9 +5313,11 @@ static int vulkan_transfer_data_to_cuda(AVHWFramesContext *hwfc, AVFrame *dst,
     return prepare_frame(hwfc, &fp->upload_exec, dst_f, PREP_MODE_EXTERNAL_IMPORT);
 
 fail:
+    /* Commands queued before the failure may still use the image, and the
+     * frame stays usable, so return it the way a successful transfer does. */
+    CHECK_CU(cu->cuStreamSynchronize(cuda_dev->stream));
     CHECK_CU(cu->cuCtxPopCurrent(&dummy));
-    vulkan_free_internal(p, dst_f);
-    av_buffer_unref(&dst->buf[0]);
+    prepare_frame(hwfc, &fp->upload_exec, dst_f, PREP_MODE_EXTERNAL_IMPORT);
     return err;
 }
 #endif

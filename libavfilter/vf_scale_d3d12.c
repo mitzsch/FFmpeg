@@ -18,7 +18,7 @@
 
 #define COBJMACROS
 
-#include "libavutil/fifo.h"
+#include "libavutil/frame.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 #include "compat/w32dlfcn.h"
@@ -27,14 +27,11 @@
 #include "libavutil/hwcontext_d3d12va.h"
 #include "libavutil/hwcontext_d3d12va_internal.h"
 
+#include "d3d12_vpp.h"
 #include "filters.h"
+#include "formats.h"
 #include "scale_eval.h"
 #include "video.h"
-
-typedef struct D3D12ScaleCommandAllocator {
-    ID3D12CommandAllocator *command_allocator;
-    UINT64 fence_value;
-} D3D12ScaleCommandAllocator;
 
 typedef struct ScaleD3D12Context {
     const AVClass *classCtx;
@@ -42,19 +39,16 @@ typedef struct ScaleD3D12Context {
     char *h_expr;
     enum AVPixelFormat format;
 
-    /* D3D12 objects */
+    char *color_matrix_string;
+    char *color_transfer_string;
+    char *color_primaries_string;
+    int   color_range;
+    enum AVColorSpace color_matrix;
+    enum AVColorTransferCharacteristic color_transfer;
+    enum AVColorPrimaries color_primaries;
+
     ID3D12Device *device;
-    ID3D12VideoDevice *video_device;
-    ID3D12VideoProcessor *video_processor;
-    ID3D12CommandQueue *command_queue;
-    ID3D12VideoProcessCommandList *command_list;
-
-    AVFifo *allocator_queue;
-
-    /* Synchronization */
-    ID3D12Fence *fence;
-    UINT64 fence_value;
-    HANDLE fence_event;
+    D3D12VPPContext vpp;
 
     /* Buffer references */
     AVBufferRef *hw_device_ctx;
@@ -65,203 +59,154 @@ typedef struct ScaleD3D12Context {
     int input_width, input_height;
     DXGI_FORMAT input_format;
     DXGI_FORMAT output_format;
+    int input_is_rgb;
+    int output_is_rgb;
+    int input_has_alpha;
+    int output_has_alpha;
+    int alpha_passthrough;
 
     /* Color space and frame rate */
     DXGI_COLOR_SPACE_TYPE input_colorspace;
+    DXGI_COLOR_SPACE_TYPE output_colorspace;
     AVRational input_framerate;
+
+    /* AVFrame-facing output color properties, derived once from the first
+     * frame plus the out_* options and then reused for every frame. */
+    enum AVColorSpace output_av_colorspace;
+    enum AVColorRange output_av_color_range;
+    enum AVColorPrimaries output_av_color_primaries;
+    enum AVColorTransferCharacteristic output_av_color_trc;
+
+    enum AVColorPrimaries input_av_color_primaries;
+    enum AVColorTransferCharacteristic input_av_color_trc;
 
     /* Video processor capabilities */
     D3D12_FEATURE_DATA_VIDEO_PROCESS_SUPPORT process_support;
 } ScaleD3D12Context;
 
 static av_cold int scale_d3d12_init(AVFilterContext *ctx) {
-    return 0;
-}
+    ScaleD3D12Context *s = ctx->priv;
 
-static int scale_d3d12_get_valid_command_allocator(ScaleD3D12Context *s, AVFilterContext *ctx,
-                                                    ID3D12CommandAllocator **ppAllocator)
-{
-    HRESULT hr;
-    D3D12ScaleCommandAllocator allocator;
+#define STRING_OPTION(var_name, func_name, opt_name, default_value) do {      \
+        if (s->var_name ## _string) {                                         \
+            int var = av_ ## func_name ## _from_name(s->var_name ## _string); \
+            if (var < 0) {                                                    \
+                av_log(ctx, AV_LOG_ERROR, "Invalid %s.\n", opt_name);         \
+                return AVERROR(EINVAL);                                       \
+            }                                                                 \
+            s->var_name = var;                                                \
+        } else {                                                              \
+            s->var_name = default_value;                                      \
+        }                                                                     \
+    } while (0)
 
-    if (av_fifo_peek(s->allocator_queue, &allocator, 1, 0) >= 0) {
-        UINT64 completed = ID3D12Fence_GetCompletedValue(s->fence);
-        if (completed >= allocator.fence_value) {
-            *ppAllocator = allocator.command_allocator;
-            av_fifo_read(s->allocator_queue, &allocator, 1);
-            return 0;
-        }
-    }
+    STRING_OPTION(color_matrix,    color_space,     "out_color_matrix",    AVCOL_SPC_UNSPECIFIED);
+    STRING_OPTION(color_transfer,  color_transfer,  "out_color_transfer",  AVCOL_TRC_UNSPECIFIED);
+    STRING_OPTION(color_primaries, color_primaries, "out_color_primaries", AVCOL_PRI_UNSPECIFIED);
 
-    hr = ID3D12Device_CreateCommandAllocator(s->device, D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS,
-                                             &IID_ID3D12CommandAllocator, (void **)ppAllocator);
-    if (FAILED(hr)) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to create a new command allocator: HRESULT 0x%lX\n", hr);
-        return AVERROR_EXTERNAL;
-    }
+#undef STRING_OPTION
 
     return 0;
 }
 
-static int scale_d3d12_discard_command_allocator(ScaleD3D12Context *s, ID3D12CommandAllocator *pAllocator,
-                                                  UINT64 fence_value)
+static int d3d12_scale_trc_group(enum AVColorTransferCharacteristic trc)
 {
-    D3D12ScaleCommandAllocator allocator = {
-        .command_allocator = pAllocator,
-        .fence_value       = fence_value,
-    };
+    switch (trc) {
+    case AVCOL_TRC_BT709:
+    case AVCOL_TRC_SMPTE170M:
+    case AVCOL_TRC_BT2020_10:
+    case AVCOL_TRC_BT2020_12:
+        return 0; /* trc_bt709 */
 
-    av_fifo_write(s->allocator_queue, &allocator, 1);
+    case AVCOL_TRC_GAMMA22:
+        return 1; /* trc_gamma22 */
 
-    return 0;
-}
+    case AVCOL_TRC_GAMMA28:
+        return 2; /* trc_gamma28 */
 
-static void release_d3d12_resources(ScaleD3D12Context *s) {
-    UINT64 fence_value;
-    HRESULT hr;
-    D3D12ScaleCommandAllocator allocator;
+    case AVCOL_TRC_SMPTE240M:
+        return 3; /* trc_smpte240M */
 
-    /* Wait for all GPU operations to complete before releasing resources */
-    if (s->command_queue && s->fence && s->fence_event) {
-        fence_value = s->fence_value - 1;
-        hr = ID3D12CommandQueue_Signal(s->command_queue, s->fence, fence_value);
-        if (SUCCEEDED(hr)) {
-            UINT64 completed = ID3D12Fence_GetCompletedValue(s->fence);
-            if (completed < fence_value) {
-                hr = ID3D12Fence_SetEventOnCompletion(s->fence, fence_value, s->fence_event);
-                if (SUCCEEDED(hr)) {
-                    WaitForSingleObject(s->fence_event, INFINITE);
-                }
-            }
-        }
-    }
+    case AVCOL_TRC_IEC61966_2_1:
+        return 4; /* trc_iec61966_2_1 (sRGB) */
 
-    if (s->fence_event) {
-        CloseHandle(s->fence_event);
-        s->fence_event = NULL;
-    }
-
-    if (s->fence) {
-        ID3D12Fence_Release(s->fence);
-        s->fence = NULL;
-    }
-
-    if (s->command_list) {
-        ID3D12VideoProcessCommandList_Release(s->command_list);
-        s->command_list = NULL;
-    }
-
-    if (s->allocator_queue) {
-        while (av_fifo_read(s->allocator_queue, &allocator, 1) >= 0)
-            ID3D12CommandAllocator_Release(allocator.command_allocator);
-        av_fifo_freep2(&s->allocator_queue);
-    }
-
-    if (s->video_processor) {
-        ID3D12VideoProcessor_Release(s->video_processor);
-        s->video_processor = NULL;
-    }
-
-    if (s->video_device) {
-        ID3D12VideoDevice_Release(s->video_device);
-        s->video_device = NULL;
-    }
-
-    if (s->command_queue) {
-        ID3D12CommandQueue_Release(s->command_queue);
-        s->command_queue = NULL;
+    default:
+        return -1;
     }
 }
 
-static DXGI_COLOR_SPACE_TYPE get_dxgi_colorspace(enum AVColorSpace colorspace, enum AVColorTransferCharacteristic trc, int is_10bit)
+static int d3d12_scale_finalize_output_trc(AVFilterContext *ctx,
+                                           DXGI_COLOR_SPACE_TYPE input_space,
+                                           DXGI_COLOR_SPACE_TYPE output_space,
+                                           int explicit_request,
+                                           enum AVColorTransferCharacteristic input_trc,
+                                           enum AVColorTransferCharacteristic *trc)
 {
-    /* Map FFmpeg color space to DXGI color space */
-    if (is_10bit) {
-        /* 10-bit formats (P010) */
-        if (colorspace == AVCOL_SPC_BT2020_NCL || colorspace == AVCOL_SPC_BT2020_CL) {
-            if (trc == AVCOL_TRC_SMPTE2084) {
-                return DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020;      ///< HDR10
-            } else if (trc == AVCOL_TRC_ARIB_STD_B67) {
-                return DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020;    ///< HLG
-            } else {
-                return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020;
-            }
-        } else {
-            return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;             ///< Rec.709 10-bit
+    enum AVColorTransferCharacteristic canonical =
+        (output_space == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709) ?
+            AVCOL_TRC_IEC61966_2_1 : AVCOL_TRC_BT709;
+    enum AVColorTransferCharacteristic canonical_input =
+        (input_trc == AVCOL_TRC_SMPTE2084 ||
+         input_trc == AVCOL_TRC_ARIB_STD_B67 ||
+         input_trc == AVCOL_TRC_LINEAR) ? input_trc :
+        (input_space == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709) ?
+            AVCOL_TRC_IEC61966_2_1 : AVCOL_TRC_BT709;
+
+    if (canonical_input != canonical) {
+        if (*trc != canonical) {
+            const char *old_name = av_color_transfer_name(*trc);
+            const char *new_name = av_color_transfer_name(canonical);
+            av_log(ctx, AV_LOG_WARNING,
+                   "No exact DXGI color space; retagging transfer "
+                   "characteristic from %s to %s\n",
+                   old_name ? old_name : "unknown", new_name ? new_name : "unknown");
+            *trc = canonical;
         }
+
+        return 0;
+    }
+
+    if (!explicit_request)
+        return 0;
+
+    if (d3d12_scale_trc_group(*trc) == d3d12_scale_trc_group(input_trc))
+        return 0;
+
+    const char *req_name = av_color_transfer_name(*trc);
+
+    if (input_trc == AVCOL_TRC_UNSPECIFIED) {
+        av_log(ctx, AV_LOG_ERROR,
+               "Cannot verify requested transfer characteristic (%s); "
+               "input's curve is unspecified/unknown\n",
+               req_name ? req_name : "requested value");
     } else {
-        /* 8-bit formats (NV12) */
-        if (colorspace == AVCOL_SPC_BT2020_NCL || colorspace == AVCOL_SPC_BT2020_CL) {
-            return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020;
-        } else if (colorspace == AVCOL_SPC_BT470BG || colorspace == AVCOL_SPC_SMPTE170M) {
-            return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601;
-        } else {
-            return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;             ///< Default to Rec.709
-        }
-    }
-}
-
-static AVRational get_input_framerate(AVFilterContext *ctx, AVFilterLink *inlink, AVFrame *in)
-{
-    AVRational framerate = {0, 0};
-
-    if (in->duration > 0 && inlink->time_base.num > 0 && inlink->time_base.den > 0) {
-        /*
-        * Calculate framerate from frame duration and timebase
-        * framerate = 1 / (duration * timebase)
-        */
-        av_reduce(&framerate.num, &framerate.den,
-                  inlink->time_base.den, in->duration * inlink->time_base.num,
-                  INT_MAX);
-    } else if (inlink->time_base.num > 0 && inlink->time_base.den > 0) {
-        /* Estimate from timebase (inverse of timebase is often the framerate) */
-        framerate.num = inlink->time_base.den;
-        framerate.den = inlink->time_base.num;
-    } else {
-        /* Default to 30fps if framerate cannot be determined */
-        framerate.num = 30;
-        framerate.den = 1;
-        av_log(ctx, AV_LOG_WARNING, "Input framerate not determinable, defaulting to 30fps\n");
+        const char *old_name = av_color_transfer_name(input_trc);
+        av_log(ctx, AV_LOG_ERROR,
+               "Requested transfer characteristic (%s) differs from "
+               "input's (%s); same DXGI color space means no curve "
+               "change applies\n",
+               req_name ? req_name : "requested value",
+               old_name ? old_name : "transfer characteristic");
     }
 
-    return framerate;
+    return AVERROR(EINVAL);
 }
 
 static int scale_d3d12_configure_processor(ScaleD3D12Context *s, AVFilterContext *ctx) {
     HRESULT hr;
     int ret;
-    ID3D12CommandAllocator *command_allocator = NULL;
 
     if (s->output_format == DXGI_FORMAT_UNKNOWN) {
         av_log(ctx, AV_LOG_ERROR, "Output format not initialized\n");
         return AVERROR(EINVAL);
     }
 
-    AVHWDeviceContext *hwctx = (AVHWDeviceContext *)s->hw_device_ctx->data;
-    AVD3D12VADeviceContext *d3d12_hwctx = (AVD3D12VADeviceContext *)hwctx->hwctx;
-    s->device = d3d12_hwctx->device;
-
     av_log(ctx, AV_LOG_VERBOSE, "Configuring D3D12 video processor: %dx%d -> %dx%d\n",
            s->input_width, s->input_height, s->width, s->height);
 
-    hr = ID3D12Device_QueryInterface(s->device, &IID_ID3D12VideoDevice, (void **)&s->video_device);
-    if (FAILED(hr)) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to get D3D12 video device interface: HRESULT 0x%lX\n", hr);
-        return AVERROR_EXTERNAL;
-    }
-
-    D3D12_COMMAND_QUEUE_DESC queue_desc = {
-        .Type = D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS,
-        .Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
-        .Flags = D3D12_COMMAND_QUEUE_FLAG_NONE,
-        .NodeMask = 0
-    };
-
-    hr = ID3D12Device_CreateCommandQueue(s->device, &queue_desc, &IID_ID3D12CommandQueue, (void **)&s->command_queue);
-    if (FAILED(hr)) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to create command queue: HRESULT 0x%lX\n", hr);
-        return AVERROR_EXTERNAL;
-    }
+    ret = ff_d3d12_vpp_init(ctx, &s->vpp, s->device);
+    if (ret < 0)
+        return ret;
 
     s->process_support.NodeIndex = 0;
 
@@ -275,13 +220,13 @@ static int scale_d3d12_configure_processor(ScaleD3D12Context *s, AVFilterContext
     s->process_support.InputStereoFormat             = D3D12_VIDEO_FRAME_STEREO_FORMAT_NONE;
 
     s->process_support.OutputFormat.Format           = s->output_format;
-    s->process_support.OutputFormat.ColorSpace       = s->input_colorspace;
+    s->process_support.OutputFormat.ColorSpace       = s->output_colorspace;
     s->process_support.OutputFrameRate.Numerator     = s->input_framerate.num;
     s->process_support.OutputFrameRate.Denominator   = s->input_framerate.den;
     s->process_support.OutputStereoFormat            = D3D12_VIDEO_FRAME_STEREO_FORMAT_NONE;
 
     hr = ID3D12VideoDevice_CheckFeatureSupport(
-        s->video_device,
+        s->vpp.video_device,
         D3D12_FEATURE_VIDEO_PROCESS_SUPPORT,
         &s->process_support,
         sizeof(s->process_support)
@@ -289,18 +234,42 @@ static int scale_d3d12_configure_processor(ScaleD3D12Context *s, AVFilterContext
 
     if (FAILED(hr)) {
         av_log(ctx, AV_LOG_ERROR, "Video process feature not supported: HRESULT 0x%lX\n", hr);
+        ff_d3d12_vpp_uninit(ctx, &s->vpp);
+
         return AVERROR_EXTERNAL;
     }
 
     if (!(s->process_support.SupportFlags & D3D12_VIDEO_PROCESS_SUPPORT_FLAG_SUPPORTED)) {
-        av_log(ctx, AV_LOG_ERROR, "Video process configuration not supported by hardware\n");
-        return AVERROR_EXTERNAL;
+        av_log(ctx, AV_LOG_ERROR,
+               "D3D12 video processor does not support converting %s (colorspace %d) to %s "
+               "(colorspace %d) on this device\n",
+               av_get_pix_fmt_name(ff_d3d12_filter_format_from_dxgi(s->input_format) ?
+                                   ff_d3d12_filter_format_from_dxgi(s->input_format)->pix_fmt : AV_PIX_FMT_NONE),
+               s->input_colorspace,
+               av_get_pix_fmt_name(ff_d3d12_filter_format_from_dxgi(s->output_format) ?
+                                   ff_d3d12_filter_format_from_dxgi(s->output_format)->pix_fmt : AV_PIX_FMT_NONE),
+               s->output_colorspace);
+        ff_d3d12_vpp_report_output_support(ctx, &s->vpp, &s->process_support);
+        ff_d3d12_vpp_uninit(ctx, &s->vpp);
+
+        return AVERROR(ENOSYS);
     }
+
+    int want_alpha_passthrough = s->input_has_alpha && s->output_has_alpha;
+    if (want_alpha_passthrough &&
+        !(s->process_support.FeatureSupport & D3D12_VIDEO_PROCESS_FEATURE_FLAG_ALPHA_FILL)) {
+        av_log(ctx, AV_LOG_WARNING,
+               "Device lacks ALPHA_FILL support; output alpha will be "
+               "forced opaque instead of preserved\n");
+        want_alpha_passthrough = 0;
+    }
+    s->alpha_passthrough = want_alpha_passthrough;
 
     D3D12_VIDEO_PROCESS_OUTPUT_STREAM_DESC processor_output_desc = {
         .Format                         = s->output_format,
-        .ColorSpace                     = s->input_colorspace,
-        .AlphaFillMode                  = D3D12_VIDEO_PROCESS_ALPHA_FILL_MODE_OPAQUE,
+        .ColorSpace                     = s->output_colorspace,
+        .AlphaFillMode                  = want_alpha_passthrough ? D3D12_VIDEO_PROCESS_ALPHA_FILL_MODE_SOURCE_STREAM
+                                                                  : D3D12_VIDEO_PROCESS_ALPHA_FILL_MODE_OPAQUE,
         .AlphaFillModeSourceStreamIndex = 0,
         .BackgroundColor                = { 0.0f, 0.0f, 0.0f, 1.0f },
         .FrameRate                      = { s->input_framerate.num, s->input_framerate.den },
@@ -310,8 +279,8 @@ static int scale_d3d12_configure_processor(ScaleD3D12Context *s, AVFilterContext
     D3D12_VIDEO_PROCESS_INPUT_STREAM_DESC processor_input_desc = {
         .Format                 = s->input_format,
         .ColorSpace             = s->input_colorspace,
-        .SourceAspectRatio      = { s->input_width, s->input_height },
-        .DestinationAspectRatio = { s->width, s->height },
+        .SourceAspectRatio      = { 1, 1 },
+        .DestinationAspectRatio = { 1, 1 },
         .FrameRate              = { s->input_framerate.num, s->input_framerate.den },
         .StereoFormat           = D3D12_VIDEO_FRAME_STEREO_FORMAT_NONE,
         .FieldType              = D3D12_VIDEO_FIELD_TYPE_NONE,
@@ -337,70 +306,7 @@ static int scale_d3d12_configure_processor(ScaleD3D12Context *s, AVFilterContext
         .EnableAutoProcessing  = FALSE,
     };
 
-    /* If pixel aspect ratio adjustment is not supported, set to 1:1 and warn */
-    if (!(s->process_support.FeatureSupport & D3D12_VIDEO_PROCESS_FEATURE_FLAG_PIXEL_ASPECT_RATIO)) {
-        processor_input_desc.SourceAspectRatio.Numerator        = 1;
-        processor_input_desc.SourceAspectRatio.Denominator      = 1;
-        processor_input_desc.DestinationAspectRatio.Numerator   = 1;
-        processor_input_desc.DestinationAspectRatio.Denominator = 1;
-        av_log(ctx, AV_LOG_WARNING, "Pixel aspect ratio adjustment not supported by hardware\n");
-    }
-
-    hr = ID3D12VideoDevice_CreateVideoProcessor(
-        s->video_device,
-        0,
-        &processor_output_desc,
-        1,
-        &processor_input_desc,
-        &IID_ID3D12VideoProcessor,
-        (void **)&s->video_processor
-    );
-
-    if (FAILED(hr)) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to create video processor: HRESULT 0x%lX\n", hr);
-        return AVERROR_EXTERNAL;
-    }
-
-    hr = ID3D12Device_CreateFence(s->device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&s->fence);
-    if (FAILED(hr)) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to create fence: HRESULT 0x%lX\n", hr);
-        return AVERROR_EXTERNAL;
-    }
-
-    s->fence_value = 1;
-    s->fence_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (!s->fence_event) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to create fence event\n");
-        return AVERROR_EXTERNAL;
-    }
-
-    s->allocator_queue = av_fifo_alloc2(2, sizeof(D3D12ScaleCommandAllocator), AV_FIFO_FLAG_AUTO_GROW);
-    if (!s->allocator_queue)
-        return AVERROR(ENOMEM);
-
-    ret = scale_d3d12_get_valid_command_allocator(s, ctx, &command_allocator);
-    if (ret < 0)
-        return ret;
-
-    hr = ID3D12Device_CreateCommandList(
-        s->device,
-        0,
-        D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS,
-        command_allocator,
-        NULL,
-        &IID_ID3D12VideoProcessCommandList,
-        (void **)&s->command_list
-    );
-
-    if (FAILED(hr)) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to create command list: HRESULT 0x%lX\n", hr);
-        ID3D12CommandAllocator_Release(command_allocator);
-        return AVERROR_EXTERNAL;
-    }
-
-    ID3D12VideoProcessCommandList_Close(s->command_list);
-
-    ret = scale_d3d12_discard_command_allocator(s, command_allocator, 0);
+    ret = ff_d3d12_vpp_create_processor(ctx, &s->vpp, &processor_output_desc, &processor_input_desc);
     if (ret < 0)
         return ret;
 
@@ -415,8 +321,7 @@ static int scale_d3d12_filter_frame(AVFilterLink *inlink, AVFrame *in)
     AVFilterLink *outlink = ctx->outputs[0];
     AVFrame          *out = NULL;
     int ret = 0;
-    HRESULT hr;
-    ID3D12CommandAllocator *command_allocator = NULL;
+    int frames_in_use;
 
     if (!in) {
         av_log(ctx, AV_LOG_ERROR, "Null input frame\n");
@@ -426,6 +331,7 @@ static int scale_d3d12_filter_frame(AVFilterLink *inlink, AVFrame *in)
     if (!in->hw_frames_ctx) {
         av_log(ctx, AV_LOG_ERROR, "No hardware frames context in input frame\n");
         av_frame_free(&in);
+
         return AVERROR(EINVAL);
     }
 
@@ -434,6 +340,7 @@ static int scale_d3d12_filter_frame(AVFilterLink *inlink, AVFrame *in)
     if (!s->hw_device_ctx) {
         av_log(ctx, AV_LOG_ERROR, "Filter hardware device context is uninitialized\n");
         av_frame_free(&in);
+
         return AVERROR(EINVAL);
     }
 
@@ -443,6 +350,18 @@ static int scale_d3d12_filter_frame(AVFilterLink *inlink, AVFrame *in)
     if (input_device_ctx->type != filter_device_ctx->type) {
         av_log(ctx, AV_LOG_ERROR, "Mismatch between input and filter hardware device types\n");
         av_frame_free(&in);
+
+        return AVERROR(EINVAL);
+    }
+
+    AVD3D12VADeviceContext *input_d3d12_hwctx  = (AVD3D12VADeviceContext *)input_device_ctx->hwctx;
+    AVD3D12VADeviceContext *filter_d3d12_hwctx = (AVD3D12VADeviceContext *)filter_device_ctx->hwctx;
+    if (input_d3d12_hwctx->device != filter_d3d12_hwctx->device) {
+        av_log(ctx, AV_LOG_ERROR,
+               "Input frame's hw_frames_ctx belongs to a different "
+               "ID3D12Device than this filter's own device\n");
+        av_frame_free(&in);
+
         return AVERROR(EINVAL);
     }
 
@@ -450,6 +369,7 @@ static int scale_d3d12_filter_frame(AVFilterLink *inlink, AVFrame *in)
     if (!out) {
         av_log(ctx, AV_LOG_ERROR, "Failed to allocate output frame\n");
         av_frame_free(&in);
+
         return AVERROR(ENOMEM);
     }
 
@@ -459,37 +379,161 @@ static int scale_d3d12_filter_frame(AVFilterLink *inlink, AVFrame *in)
         goto fail;
     }
 
-    if (!s->video_processor) {
+    if (!s->vpp.configured) {
         AVHWFramesContext *input_frames_ctx = (AVHWFramesContext *)in->hw_frames_ctx->data;
+        const D3D12FilterFormat *in_map, *out_map;
+        enum AVColorSpace out_spc;
+        enum AVColorRange out_range;
+        enum AVColorPrimaries out_primaries;
+        enum AVColorTransferCharacteristic out_trc;
 
-        s->input_width = input_frames_ctx->width;
-        s->input_height = input_frames_ctx->height;
+        s->input_width  = in->width;
+        s->input_height = in->height;
 
         AVD3D12VAFramesContext *input_hwctx = (AVD3D12VAFramesContext *)input_frames_ctx->hwctx;
         s->input_format = input_hwctx->format;
 
         if (s->input_format == DXGI_FORMAT_UNKNOWN) {
-            switch (input_frames_ctx->sw_format) {
-                case AV_PIX_FMT_NV12:
-                    s->input_format = DXGI_FORMAT_NV12;
-                    break;
-                case AV_PIX_FMT_P010:
-                    s->input_format = DXGI_FORMAT_P010;
-                    break;
-                default:
-                    av_log(ctx, AV_LOG_ERROR, "Unsupported input format\n");
-                    ret = AVERROR(EINVAL);
-                    goto fail;
+            in_map = ff_d3d12_filter_format_from_pix_fmt(input_frames_ctx->sw_format);
+            if (!in_map) {
+                av_log(ctx, AV_LOG_ERROR, "Unsupported input format: %s\n",
+                       av_get_pix_fmt_name(input_frames_ctx->sw_format));
+                ret = AVERROR(EINVAL);
+                goto fail;
+            }
+            s->input_format = in_map->dxgi_format;
+        }
+
+        in_map = ff_d3d12_filter_format_from_dxgi(s->input_format);
+        s->input_is_rgb = in_map ? in_map->is_rgb : 0;
+        const AVPixFmtDescriptor *in_desc = in_map ? av_pix_fmt_desc_get(in_map->pix_fmt) : NULL;
+        s->input_has_alpha = in_desc && (in_desc->flags & AV_PIX_FMT_FLAG_ALPHA);
+
+        enum AVColorRange in_range = in->color_range != AVCOL_RANGE_UNSPECIFIED ? in->color_range
+                                     : (s->input_is_rgb ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG);
+        enum AVColorSpace in_spc = in->colorspace;
+        enum AVColorPrimaries in_primaries = in->color_primaries;
+        enum AVColorTransferCharacteristic in_trc = in->color_trc;
+
+        ret = ff_d3d12_filter_get_colorspace(ctx, s->input_is_rgb, 0, &in_spc, &in_range,
+                                             &in_primaries, &in_trc, in->chroma_location,
+                                             AVCOL_PRI_UNSPECIFIED, &s->input_colorspace);
+        if (ret < 0)
+            goto fail;
+
+        s->input_av_color_primaries = in_primaries;
+        s->input_av_color_trc       = in_trc;
+
+        enum AVColorPrimaries input_601_hint = AVCOL_PRI_UNSPECIFIED;
+        if (s->input_colorspace == DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601 ||
+            s->input_colorspace == DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601)
+            input_601_hint = in_primaries;
+
+        /* Output color properties: options override, otherwise inherit
+         * from the input. RGB output defaults to full range. */
+        out_map = ff_d3d12_filter_format_from_dxgi(s->output_format);
+        s->output_is_rgb = out_map ? out_map->is_rgb : 0;
+        const AVPixFmtDescriptor *out_desc = out_map ? av_pix_fmt_desc_get(out_map->pix_fmt) : NULL;
+        s->output_has_alpha = out_desc && (out_desc->flags & AV_PIX_FMT_FLAG_ALPHA);
+
+        out_spc       = s->color_matrix    != AVCOL_SPC_UNSPECIFIED ? s->color_matrix    :
+                        s->color_primaries != AVCOL_PRI_UNSPECIFIED ? AVCOL_SPC_UNSPECIFIED :
+                        in->colorspace;
+        out_primaries = s->color_primaries != AVCOL_PRI_UNSPECIFIED ? s->color_primaries : in_primaries;
+        out_trc       = s->color_transfer  != AVCOL_TRC_UNSPECIFIED ? s->color_transfer  : in->color_trc;
+        if (s->color_transfer == AVCOL_TRC_UNSPECIFIED && in->color_trc == AVCOL_TRC_UNSPECIFIED &&
+            out_map && out_map->pix_fmt == AV_PIX_FMT_RGBAF16)
+            out_trc = AVCOL_TRC_LINEAR;
+        /* AVCOL_SPC_RGB has no YCbCr matrix of its own, so when converting
+         * an RGB input frame back to a YUV output format Treat it as unspecified
+         * instead */
+        if (!s->output_is_rgb && out_spc == AVCOL_SPC_RGB)
+            out_spc = AVCOL_SPC_UNSPECIFIED;
+
+        if (s->color_range != AVCOL_RANGE_UNSPECIFIED)
+            out_range = s->color_range;
+        else if (out_trc == AVCOL_TRC_LINEAR)
+            /* Linear RGB has no studio-range DXGI color space either  default
+             * to full range and let the processor do the limited->full expansion
+             * instead. */
+            out_range = AVCOL_RANGE_JPEG;
+        else if (in->color_range != AVCOL_RANGE_UNSPECIFIED)
+            out_range = in->color_range;
+        else
+            out_range = s->output_is_rgb ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+
+        ret = ff_d3d12_filter_get_colorspace(ctx, s->output_is_rgb, 1, &out_spc, &out_range,
+                                             &out_primaries, &out_trc, in->chroma_location,
+                                             input_601_hint, &s->output_colorspace);
+        if (ret < 0)
+            goto fail;
+
+        if (out_trc != AVCOL_TRC_SMPTE2084 && out_trc != AVCOL_TRC_ARIB_STD_B67 &&
+            out_trc != AVCOL_TRC_LINEAR) {
+            ret = d3d12_scale_finalize_output_trc(ctx, s->input_colorspace, s->output_colorspace,
+                                                  s->color_transfer != AVCOL_TRC_UNSPECIFIED,
+                                                  in->color_trc, &out_trc);
+            if (ret < 0)
+                goto fail;
+        }
+
+        if (s->output_is_rgb)
+            s->output_av_colorspace = AVCOL_SPC_RGB;
+        else if (out_spc != AVCOL_SPC_UNSPECIFIED)
+            s->output_av_colorspace = out_spc;
+        else if (out_primaries == AVCOL_PRI_BT2020)
+            s->output_av_colorspace = AVCOL_SPC_BT2020_NCL;
+        else if (out_primaries == AVCOL_PRI_BT470BG || out_primaries == AVCOL_PRI_SMPTE170M)
+            s->output_av_colorspace = AVCOL_SPC_SMPTE170M;
+        else
+            s->output_av_colorspace = AVCOL_SPC_BT709;
+        s->output_av_color_range     = out_range;
+        s->output_av_color_primaries = out_primaries;
+        s->output_av_color_trc       = out_trc;
+
+        /* outlink's colorspace/color_range/chroma_location describe a YUV,
+         * subsampled surface; they do not constrain an RGB output, so these
+         * checks only apply when the output is YUV. */
+        if (!s->output_is_rgb && outlink->colorspace != AVCOL_SPC_UNSPECIFIED &&
+            outlink->colorspace != s->output_av_colorspace) {
+            av_log(ctx, AV_LOG_ERROR,
+                   "Negotiated output color space (%s) does not match the "
+                   "%s produced from this input; set an explicit "
+                   "out_color_matrix\n",
+                   av_color_space_name(outlink->colorspace),
+                   av_color_space_name(s->output_av_colorspace));
+            ret = AVERROR(EINVAL);
+            goto fail;
+        }
+        if (!s->output_is_rgb && outlink->color_range != AVCOL_RANGE_UNSPECIFIED &&
+            outlink->color_range != s->output_av_color_range) {
+            av_log(ctx, AV_LOG_ERROR,
+                   "Negotiated output color range (%s) does not match the "
+                   "%s produced from this input; set an explicit out_range\n",
+                   av_color_range_name(outlink->color_range),
+                   av_color_range_name(s->output_av_color_range));
+            ret = AVERROR(EINVAL);
+            goto fail;
+        }
+        if (!s->output_is_rgb) {
+            enum AVChromaLocation out_chroma_loc = ff_d3d12_filter_chroma_location(s->output_colorspace);
+            if (outlink->chroma_location != AVCHROMA_LOC_UNSPECIFIED &&
+                outlink->chroma_location != out_chroma_loc) {
+                av_log(ctx, AV_LOG_ERROR,
+                       "Negotiated output chroma siting does not match the "
+                       "siting produced from this input\n");
+                ret = AVERROR(EINVAL);
+                goto fail;
             }
         }
 
-        int is_10bit = (s->input_format == DXGI_FORMAT_P010);
-        s->input_colorspace = get_dxgi_colorspace(in->colorspace, in->color_trc, is_10bit);
+        s->input_framerate = ff_d3d12_filter_get_input_framerate(ctx, inlink, in);
 
-        s->input_framerate = get_input_framerate(ctx, inlink, in);
-
-        av_log(ctx, AV_LOG_VERBOSE, "Input format: %dx%d, DXGI format: %d, colorspace: %d, framerate: %d/%d\n",
+        av_log(ctx, AV_LOG_VERBOSE,
+               "Input format: %dx%d, DXGI format: %d, colorspace: %d -> "
+               "Output DXGI format: %d, colorspace: %d, framerate: %d/%d\n",
                s->input_width, s->input_height, s->input_format, s->input_colorspace,
+               s->output_format, s->output_colorspace,
                s->input_framerate.num, s->input_framerate.den);
 
         ret = scale_d3d12_configure_processor(s, ctx);
@@ -497,6 +541,19 @@ static int scale_d3d12_filter_frame(AVFilterLink *inlink, AVFrame *in)
             av_log(ctx, AV_LOG_ERROR, "Failed to configure processor\n");
             goto fail;
         }
+    }
+
+    /* alpha_mode is a per-frame AVFrame property, not a fixed property of
+     * the negotiated pixel formats, so this must be checked for every
+     * frame, not just the first one. */
+    if (s->input_has_alpha && in->alpha_mode == AVALPHA_MODE_PREMULTIPLIED &&
+        (!s->output_has_alpha || !s->alpha_passthrough ||
+         s->input_colorspace != s->output_colorspace)) {
+        av_log(ctx, AV_LOG_ERROR,
+               "Input has premultiplied alpha, which this conversion "
+               "cannot preserve; unpremultiply before scale_d3d12\n");
+        ret = AVERROR(EINVAL);
+        goto fail;
     }
 
     AVD3D12VAFrame *input_frame  = (AVD3D12VAFrame *)in->data[0];
@@ -517,65 +574,27 @@ static int scale_d3d12_filter_frame(AVFilterLink *inlink, AVFrame *in)
         goto fail;
     }
 
-    /* Wait for input frame's fence before accessing it */
-    if (input_frame->sync_ctx.fence && input_frame->sync_ctx.fence_value > 0) {
-        UINT64 completed = ID3D12Fence_GetCompletedValue(input_frame->sync_ctx.fence);
-        if (completed < input_frame->sync_ctx.fence_value) {
-            hr = ID3D12CommandQueue_Wait(s->command_queue, input_frame->sync_ctx.fence, input_frame->sync_ctx.fence_value);
-            if (FAILED(hr)) {
-                av_log(ctx, AV_LOG_ERROR, "Failed to wait for input fence: HRESULT 0x%lX\n", hr);
-                ret = AVERROR_EXTERNAL;
-                goto fail;
-            }
-        }
-    }
-
-    ret = scale_d3d12_get_valid_command_allocator(s, ctx, &command_allocator);
+    ret = ff_d3d12_vpp_begin(ctx, &s->vpp);
     if (ret < 0)
         goto fail;
 
-    hr = ID3D12CommandAllocator_Reset(command_allocator);
-    if (FAILED(hr)) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to reset command allocator: HRESULT 0x%lX\n", hr);
-        ret = AVERROR_EXTERNAL;
-        goto fail;
-    }
+    D3D12_RESOURCE_BARRIER barriers[4];
+    int nb_barriers = 0;
 
-    hr = ID3D12VideoProcessCommandList_Reset(s->command_list, command_allocator);
-    if (FAILED(hr)) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to reset command list: HRESULT 0x%lX\n", hr);
-        ret = AVERROR_EXTERNAL;
-        goto fail;
-    }
+    ff_d3d12_filter_add_frame_barriers(barriers, &nb_barriers, input_frame, s->input_is_rgb ? 1 : 2,
+                                       D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_VIDEO_PROCESS_READ);
+    ff_d3d12_filter_add_frame_barriers(barriers, &nb_barriers, output_frame, s->output_is_rgb ? 1 : 2,
+                                       D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_VIDEO_PROCESS_WRITE);
 
-    D3D12_RESOURCE_BARRIER barriers[2] = {
-        {
-            .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-            .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE,
-            .Transition = {
-                .pResource   = input_resource,
-                .Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                .StateBefore = D3D12_RESOURCE_STATE_COMMON,
-                .StateAfter  = D3D12_RESOURCE_STATE_VIDEO_PROCESS_READ
-            }
-        },
-        {
-            .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-            .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE,
-            .Transition = {
-                .pResource   = output_resource,
-                .Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                .StateBefore = D3D12_RESOURCE_STATE_COMMON,
-                .StateAfter  = D3D12_RESOURCE_STATE_VIDEO_PROCESS_WRITE
-            }
-        }
-    };
-
-    ID3D12VideoProcessCommandList_ResourceBarrier(s->command_list, 2, barriers);
+    ID3D12VideoProcessCommandList_ResourceBarrier(s->vpp.cmd.list.video_process, nb_barriers, barriers);
 
     D3D12_VIDEO_PROCESS_INPUT_STREAM_ARGUMENTS input_args = {0};
 
-    input_args.InputStream[0].pTexture2D = input_resource;
+    /* subresource_index is 0 for a plain texture, but for a texture-array
+     * input (AV_D3D12VA_FRAME_FLAG_TEXTURE_ARRAY) it is the real array
+     * slice and must be passed through as-is. */
+    input_args.InputStream[0].pTexture2D  = input_resource;
+    input_args.InputStream[0].Subresource = input_frame->subresource_index;
     input_args.Transform.SourceRectangle.right       = s->input_width;
     input_args.Transform.SourceRectangle.bottom      = s->input_height;
     input_args.Transform.DestinationRectangle.right  = s->width;
@@ -594,50 +613,31 @@ static int scale_d3d12_filter_frame(AVFilterLink *inlink, AVFrame *in)
 
     D3D12_VIDEO_PROCESS_OUTPUT_STREAM_ARGUMENTS output_args = {0};
 
-    output_args.OutputStream[0].pTexture2D = output_resource;
+    /* Same reasoning as input_args.InputStream[0].Subresource above. */
+    output_args.OutputStream[0].pTexture2D  = output_resource;
+    output_args.OutputStream[0].Subresource = output_frame->subresource_index;
     output_args.TargetRectangle.right  = s->width;
     output_args.TargetRectangle.bottom = s->height;
 
     ID3D12VideoProcessCommandList_ProcessFrames(
-        s->command_list,
-        s->video_processor,
+        s->vpp.cmd.list.video_process,
+        s->vpp.video_processor,
         &output_args,
         1,
         &input_args
     );
 
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < nb_barriers; i++) {
         FFSWAP(D3D12_RESOURCE_STATES, barriers[i].Transition.StateBefore, barriers[i].Transition.StateAfter);
     }
-    ID3D12VideoProcessCommandList_ResourceBarrier(s->command_list, 2, barriers);
+    ID3D12VideoProcessCommandList_ResourceBarrier(s->vpp.cmd.list.video_process, nb_barriers, barriers);
 
-    hr = ID3D12VideoProcessCommandList_Close(s->command_list);
-    if (FAILED(hr)) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to close command list: HRESULT 0x%lX\n", hr);
-        ret = AVERROR_EXTERNAL;
+    ret = ff_d3d12_vpp_submit(ctx, &s->vpp, &in, 1, out, &frames_in_use);
+    if (ret < 0) {
+        if (frames_in_use)
+            return ret;
         goto fail;
     }
-
-    ID3D12CommandList *cmd_lists[] = { (ID3D12CommandList *)s->command_list };
-    ID3D12CommandQueue_ExecuteCommandLists(s->command_queue, 1, cmd_lists);
-
-    hr = ID3D12CommandQueue_Signal(s->command_queue, s->fence, s->fence_value);
-    if (FAILED(hr)) {
-        av_log(ctx, AV_LOG_ERROR, "Failed to signal fence: HRESULT 0x%lX\n", hr);
-        ret = AVERROR_EXTERNAL;
-        goto fail;
-    }
-
-    output_frame->sync_ctx.fence = s->fence;
-    output_frame->sync_ctx.fence_value = s->fence_value;
-    ID3D12Fence_AddRef(s->fence);  ///< Increment reference count
-
-    ret = scale_d3d12_discard_command_allocator(s, command_allocator, s->fence_value);
-    command_allocator = NULL;
-    if (ret < 0)
-        goto fail;
-
-    s->fence_value++;
 
     ret = av_frame_copy_props(out, in);
     if (ret < 0) {
@@ -645,17 +645,48 @@ static int scale_d3d12_filter_frame(AVFilterLink *inlink, AVFrame *in)
         goto fail;
     }
 
+    int in_width  = in->width;
+    int in_height = in->height;
+
     out->width = s->width;
     out->height = s->height;
     out->format = AV_PIX_FMT_D3D12;
+
+    if (out->width != in_width || out->height != in_height)
+        av_reduce(&out->sample_aspect_ratio.num, &out->sample_aspect_ratio.den,
+                 (int64_t)in->sample_aspect_ratio.num * out->height * in_width,
+                 (int64_t)in->sample_aspect_ratio.den * out->width * in_height,
+                 INT_MAX);
+
+    if (out->width != in_width || out->height != in_height) {
+        av_frame_side_data_remove_by_props(&out->side_data, &out->nb_side_data,
+                                           AV_SIDE_DATA_PROP_SIZE_DEPENDENT);
+        out->crop_left = out->crop_right = out->crop_top = out->crop_bottom = 0;
+    }
+
+    out->colorspace      = s->output_av_colorspace;
+    out->color_range     = s->output_av_color_range;
+    out->color_primaries = s->output_av_color_primaries;
+    out->color_trc       = s->output_av_color_trc;
+
+    if (out->color_primaries != s->input_av_color_primaries || out->color_trc != s->input_av_color_trc)
+        av_frame_side_data_remove_by_props(&out->side_data, &out->nb_side_data,
+                                           AV_SIDE_DATA_PROP_COLOR_DEPENDENT);
+
+    if (!s->output_has_alpha)
+        out->alpha_mode = AVALPHA_MODE_UNSPECIFIED;
+
+    if (s->output_is_rgb) {
+        out->chroma_location = AVCHROMA_LOC_UNSPECIFIED;
+    } else {
+        out->chroma_location = ff_d3d12_filter_chroma_location(s->output_colorspace);
+    }
 
     av_frame_free(&in);
 
     return ff_filter_frame(outlink, out);
 
 fail:
-    if (command_allocator)
-        scale_d3d12_discard_command_allocator(s, command_allocator, s->fence_value);
     av_frame_free(&in);
     av_frame_free(&out);
     return ret;
@@ -670,8 +701,13 @@ static int scale_d3d12_config_props(AVFilterLink *outlink)
     FilterLink     *outl = ff_filter_link(outlink);
     int ret;
 
-    release_d3d12_resources(s);
+    if (ff_d3d12_vpp_uninit(ctx, &s->vpp) < 0) {
+        av_log(ctx, AV_LOG_ERROR,
+               "Cannot (re)configure scale_d3d12: a prior configuration's "
+               "D3D12 resources could not be confirmed released\n");
 
+        return AVERROR_EXTERNAL;
+    }
     av_buffer_unref(&s->hw_frames_ctx_out);
     av_buffer_unref(&s->hw_device_ctx);
 
@@ -688,6 +724,14 @@ static int scale_d3d12_config_props(AVFilterLink *outlink)
 
     outlink->w = s->width;
     outlink->h = s->height;
+
+    if (inlink->sample_aspect_ratio.num) {
+        AVRational q = av_div_q((AVRational){ inlink->w, inlink->h },
+                                (AVRational){ outlink->w, outlink->h });
+        outlink->sample_aspect_ratio = av_mul_q(q, inlink->sample_aspect_ratio);
+    } else {
+        outlink->sample_aspect_ratio = inlink->sample_aspect_ratio;
+    }
 
     if (!inl->hw_frames_ctx) {
         av_log(ctx, AV_LOG_ERROR, "No hw_frames_ctx available on input link\n");
@@ -713,61 +757,43 @@ static int scale_d3d12_config_props(AVFilterLink *outlink)
         return AVERROR(EINVAL);
     }
 
-    s->hw_frames_ctx_out = av_hwframe_ctx_alloc(s->hw_device_ctx);
-    if (!s->hw_frames_ctx_out)
-        return AVERROR(ENOMEM);
-
-    AVHWFramesContext *frames_ctx = (AVHWFramesContext *)s->hw_frames_ctx_out->data;
     AVHWFramesContext *in_frames_ctx = (AVHWFramesContext *)inl->hw_frames_ctx->data;
 
-    if (s->format == AV_PIX_FMT_NONE) {
+    enum AVPixelFormat resolved_format = s->format;
+    if (resolved_format == AV_PIX_FMT_NONE) {
         /* If format is not specified, use the same format as input */
-        frames_ctx->sw_format = in_frames_ctx->sw_format;
-        s->format = in_frames_ctx->sw_format;
+        resolved_format = in_frames_ctx->sw_format;
         av_log(ctx, AV_LOG_VERBOSE, "D3D12 scale output format not specified, using input format: %s\n",
-               av_get_pix_fmt_name(s->format));
-    } else {
-        frames_ctx->sw_format = s->format;
+               av_get_pix_fmt_name(resolved_format));
     }
 
     /* Set output format based on sw_format */
-    switch (frames_ctx->sw_format) {
-        case AV_PIX_FMT_NV12:
-            s->output_format = DXGI_FORMAT_NV12;
-            break;
-        case AV_PIX_FMT_P010:
-            s->output_format = DXGI_FORMAT_P010;
-            break;
-        default:
-            av_log(ctx, AV_LOG_ERROR, "Unsupported output format: %s\n",
-                   av_get_pix_fmt_name(frames_ctx->sw_format));
-            av_buffer_unref(&s->hw_frames_ctx_out);
-            return AVERROR(EINVAL);
+    const D3D12FilterFormat *out_map = ff_d3d12_filter_format_from_pix_fmt(resolved_format);
+    if (!out_map) {
+        av_log(ctx, AV_LOG_ERROR, "Unsupported output format: %s\n",
+               av_get_pix_fmt_name(resolved_format));
+
+        return AVERROR(EINVAL);
     }
+    s->output_format = out_map->dxgi_format;
+    s->output_is_rgb = out_map->is_rgb;
 
-    frames_ctx->width  = s->width;
-    frames_ctx->height = s->height;
-    frames_ctx->format = AV_PIX_FMT_D3D12;
-    frames_ctx->initial_pool_size = 10;
+    const D3D12FilterFormat *in_map = ff_d3d12_filter_format_from_pix_fmt(in_frames_ctx->sw_format);
+    int input_is_rgb = in_map ? in_map->is_rgb : 0;
 
-    if (ctx->extra_hw_frames > 0)
-        frames_ctx->initial_pool_size += ctx->extra_hw_frames;
+    if (s->color_primaries != AVCOL_PRI_UNSPECIFIED ||
+        s->color_transfer  != AVCOL_TRC_UNSPECIFIED ||
+        s->color_matrix    != AVCOL_SPC_UNSPECIFIED ||
+        input_is_rgb       != s->output_is_rgb ||
+        resolved_format == AV_PIX_FMT_RGBAF16 ||
+        (input_is_rgb && s->color_range != AVCOL_RANGE_UNSPECIFIED))
+        av_frame_side_data_remove_by_props(&outlink->side_data, &outlink->nb_side_data,
+                                           AV_SIDE_DATA_PROP_COLOR_DEPENDENT);
 
-    AVD3D12VAFramesContext *frames_hwctx = frames_ctx->hwctx;
-
-    /*
-    * Set D3D12 resource flags for video processing
-    * ALLOW_RENDER_TARGET is needed for video processor output
-    */
-    frames_hwctx->format = s->output_format;
-    frames_hwctx->resource_flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-    frames_hwctx->heap_flags = D3D12_HEAP_FLAG_NONE;
-
-    ret = av_hwframe_ctx_init(s->hw_frames_ctx_out);
-    if (ret < 0) {
-        av_buffer_unref(&s->hw_frames_ctx_out);
+    ret = ff_d3d12_filter_init_output_frames(ctx, s->hw_device_ctx, resolved_format,
+                                             s->width, s->height, 4, &s->hw_frames_ctx_out);
+    if (ret < 0)
         return ret;
-    }
 
     outl->hw_frames_ctx = av_buffer_ref(s->hw_frames_ctx_out);
     if (!outl->hw_frames_ctx)
@@ -775,19 +801,94 @@ static int scale_d3d12_config_props(AVFilterLink *outlink)
 
     av_log(ctx, AV_LOG_VERBOSE, "D3D12 scale config: %dx%d -> %dx%d\n",
            inlink->w, inlink->h, outlink->w, outlink->h);
+
     return 0;
 }
 
 static av_cold void scale_d3d12_uninit(AVFilterContext *ctx) {
     ScaleD3D12Context *s = ctx->priv;
 
-    release_d3d12_resources(s);
-
-    av_buffer_unref(&s->hw_frames_ctx_out);
-    av_buffer_unref(&s->hw_device_ctx);
+    if (ff_d3d12_vpp_uninit(ctx, &s->vpp) >= 0) {
+        av_buffer_unref(&s->hw_frames_ctx_out);
+        av_buffer_unref(&s->hw_device_ctx);
+    }
 
     av_freep(&s->w_expr);
     av_freep(&s->h_expr);
+
+    av_freep(&s->color_matrix_string);
+    av_freep(&s->color_transfer_string);
+    av_freep(&s->color_primaries_string);
+}
+
+static enum AVColorSpace d3d12_scale_matrix_from_primaries(enum AVColorPrimaries primaries)
+{
+    if (primaries == AVCOL_PRI_BT2020)
+        return AVCOL_SPC_BT2020_NCL;
+    if (primaries == AVCOL_PRI_BT470BG || primaries == AVCOL_PRI_SMPTE170M)
+        return AVCOL_SPC_SMPTE170M;
+    return AVCOL_SPC_BT709;
+}
+
+static int scale_d3d12_query_formats(const AVFilterContext *avctx,
+                                     AVFilterFormatsConfig **cfg_in,
+                                     AVFilterFormatsConfig **cfg_out)
+{
+    static const enum AVPixelFormat pix_fmts[] = {
+        AV_PIX_FMT_D3D12, AV_PIX_FMT_NONE,
+    };
+    static const int out_chroma_locs_any[] = {
+        AVCHROMA_LOC_UNSPECIFIED, AVCHROMA_LOC_LEFT, AVCHROMA_LOC_TOPLEFT, -1,
+    };
+    static const int out_chroma_locs_left[] = {
+        AVCHROMA_LOC_LEFT, -1,
+    };
+    const ScaleD3D12Context *s = avctx->priv;
+    AVFilterFormats *color_spaces, *color_ranges;
+    enum AVColorSpace out_matrix;
+    int out_matrix_known;
+    int ret;
+
+    ret = ff_set_pixel_formats_from_list2(avctx, cfg_in, cfg_out, pix_fmts);
+    if (ret < 0)
+        return ret;
+
+    out_matrix_known = s->color_matrix != AVCOL_SPC_UNSPECIFIED ||
+                      s->color_primaries != AVCOL_PRI_UNSPECIFIED;
+    if (s->color_matrix != AVCOL_SPC_UNSPECIFIED)
+        out_matrix = s->color_matrix == AVCOL_SPC_BT2020_CL ? AVCOL_SPC_BT2020_NCL : s->color_matrix;
+    else if (s->color_primaries != AVCOL_PRI_UNSPECIFIED)
+        out_matrix = d3d12_scale_matrix_from_primaries(s->color_primaries);
+    else
+        out_matrix = AVCOL_SPC_UNSPECIFIED;
+
+    color_spaces = ff_all_color_spaces();
+    if ((ret = ff_formats_ref(color_spaces, &cfg_in[0]->color_spaces)) < 0)
+        return ret;
+    if (out_matrix_known)
+        color_spaces = ff_make_formats_list_singleton(out_matrix);
+    if ((ret = ff_formats_ref(color_spaces, &cfg_out[0]->color_spaces)) < 0)
+        return ret;
+
+    color_ranges = ff_all_color_ranges();
+    if ((ret = ff_formats_ref(color_ranges, &cfg_in[0]->color_ranges)) < 0)
+        return ret;
+    if (s->color_range != AVCOL_RANGE_UNSPECIFIED)
+        color_ranges = ff_make_formats_list_singleton(s->color_range);
+    if ((ret = ff_formats_ref(color_ranges, &cfg_out[0]->color_ranges)) < 0)
+        return ret;
+
+    if ((ret = ff_formats_ref(ff_all_chroma_locations(), &cfg_in[0]->chroma_locations)) < 0)
+        return ret;
+    if (out_matrix_known && out_matrix != AVCOL_SPC_BT2020_NCL) {
+        if ((ret = ff_formats_ref(ff_make_format_list(out_chroma_locs_left), &cfg_out[0]->chroma_locations)) < 0)
+            return ret;
+    } else {
+        if ((ret = ff_formats_ref(ff_make_format_list(out_chroma_locs_any), &cfg_out[0]->chroma_locations)) < 0)
+            return ret;
+    }
+
+    return 0;
 }
 
 static const AVFilterPad scale_d3d12_inputs[] = {
@@ -813,6 +914,24 @@ static const AVOption scale_d3d12_options[] = {
     { "w",  "Output video width",       OFFSET(w_expr), AV_OPT_TYPE_STRING,    {.str = "iw"}, .flags = FLAGS },
     { "h", "Output video height",       OFFSET(h_expr), AV_OPT_TYPE_STRING,    {.str = "ih"}, .flags = FLAGS },
     { "format", "Output video pixel format", OFFSET(format), AV_OPT_TYPE_PIXEL_FMT, { .i64 = AV_PIX_FMT_NONE }, INT_MIN, INT_MAX, .flags=FLAGS },
+
+    /* These color properties match the identically named ones in vf_scale_vaapi. */
+    { "out_color_matrix", "Output color matrix coefficient set",
+      OFFSET(color_matrix_string), AV_OPT_TYPE_STRING, { .str = NULL }, .flags = FLAGS },
+    { "out_range", "Output color range",
+      OFFSET(color_range), AV_OPT_TYPE_INT, { .i64 = AVCOL_RANGE_UNSPECIFIED },
+      AVCOL_RANGE_UNSPECIFIED, AVCOL_RANGE_JPEG, FLAGS, .unit = "range" },
+    { "full",    "Full range",    0, AV_OPT_TYPE_CONST, { .i64 = AVCOL_RANGE_JPEG }, 0, 0, FLAGS, .unit = "range" },
+    { "limited", "Limited range", 0, AV_OPT_TYPE_CONST, { .i64 = AVCOL_RANGE_MPEG }, 0, 0, FLAGS, .unit = "range" },
+    { "jpeg",    "Full range",    0, AV_OPT_TYPE_CONST, { .i64 = AVCOL_RANGE_JPEG }, 0, 0, FLAGS, .unit = "range" },
+    { "mpeg",    "Limited range", 0, AV_OPT_TYPE_CONST, { .i64 = AVCOL_RANGE_MPEG }, 0, 0, FLAGS, .unit = "range" },
+    { "tv",      "Limited range", 0, AV_OPT_TYPE_CONST, { .i64 = AVCOL_RANGE_MPEG }, 0, 0, FLAGS, .unit = "range" },
+    { "pc",      "Full range",    0, AV_OPT_TYPE_CONST, { .i64 = AVCOL_RANGE_JPEG }, 0, 0, FLAGS, .unit = "range" },
+    { "out_color_primaries", "Output color primaries",
+      OFFSET(color_primaries_string), AV_OPT_TYPE_STRING, { .str = NULL }, .flags = FLAGS },
+    { "out_color_transfer", "Output color transfer characteristics",
+      OFFSET(color_transfer_string), AV_OPT_TYPE_STRING, { .str = NULL }, .flags = FLAGS },
+
     { NULL }
 };
 
@@ -827,7 +946,7 @@ const FFFilter ff_vf_scale_d3d12 = {
     .uninit           = scale_d3d12_uninit,
     FILTER_INPUTS(scale_d3d12_inputs),
     FILTER_OUTPUTS(scale_d3d12_outputs),
-    FILTER_SINGLE_PIXFMT(AV_PIX_FMT_D3D12),
+    FILTER_QUERY_FUNC2(scale_d3d12_query_formats),
     .p.flags          = AVFILTER_FLAG_HWDEVICE,
     .flags_internal   = FF_FILTER_FLAG_HWFRAME_AWARE,
 };

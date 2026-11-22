@@ -44,6 +44,7 @@ typedef struct TFModel {
     SafeQueue *request_queue;
     Queue *lltask_queue;
     Queue *task_queue;
+    int nb_requests;
 } TFModel;
 
 /**
@@ -53,6 +54,7 @@ typedef struct TFModel {
 typedef struct TFInferRequest {
     TF_Output *tf_outputs;
     TF_Tensor **output_tensors;
+    uint32_t nb_output;
     TF_Output *tf_input;
     TF_Tensor *input_tensor;
 } TFInferRequest;
@@ -99,8 +101,7 @@ static void tf_free_request(TFInferRequest *request)
     av_freep(&request->tf_input);
     av_freep(&request->tf_outputs);
     if (request->output_tensors) {
-        int nb_output = sizeof(*request->output_tensors)/sizeof(request->output_tensors[0]);
-        for (uint32_t i = 0; i < nb_output; ++i) {
+        for (uint32_t i = 0; i < request->nb_output; ++i) {
             if (request->output_tensors[i]) {
                 TF_DeleteTensor(request->output_tensors[i]);
                 request->output_tensors[i] = NULL;
@@ -140,15 +141,20 @@ static TFInferRequest *tf_create_inference_request(void)
 static int tf_start_inference(void *args)
 {
     TFRequestItem *request = args;
-    TFInferRequest *infer_request = request->infer_request;
-    LastLevelTaskItem *lltask = request->lltask;
-    TaskItem *task = lltask->task;
-    TFModel *tf_model = task->model;
+    TFInferRequest *infer_request;
+    LastLevelTaskItem *lltask;
+    TaskItem *task;
+    TFModel *tf_model;
 
     if (!request) {
-        av_log(tf_model->ctx, AV_LOG_ERROR, "TFRequestItem is NULL\n");
+        av_log(NULL, AV_LOG_ERROR, "TFRequestItem is NULL\n");
         return AVERROR(EINVAL);
     }
+
+    infer_request = request->infer_request;
+    lltask = request->lltask;
+    task = lltask->task;
+    tf_model = task->model;
 
     TF_SessionRun(tf_model->session, NULL,
                   infer_request->tf_input, &infer_request->input_tensor, 1,
@@ -315,7 +321,7 @@ static int get_output_tf(DNNModel *model, const char *input_name, int input_widt
     int ret;
     TFModel *tf_model = (TFModel *)model;
     DnnContext *ctx = tf_model->ctx;
-    TaskItem task;
+    TaskItem task = { 0 };
     TFRequestItem *request;
     DNNExecBaseParams exec_params = {
         .input_name     = input_name,
@@ -486,7 +492,7 @@ static void dnn_free_model_tf(DNNModel **model)
         return;
 
     tf_model = (TFModel *)(*model);
-    ff_dnn_wait_requests(tf_model->request_queue, tf_model->ctx->nireq);
+    ff_dnn_wait_requests(tf_model->request_queue, tf_model->nb_requests);
     while (ff_safe_queue_size(tf_model->request_queue) != 0) {
         TFRequestItem *item = ff_safe_queue_pop_front(tf_model->request_queue);
         destroy_request_item(&item);
@@ -567,6 +573,7 @@ static DNNModel *dnn_load_model_tf(DnnContext *ctx, DNNFunctionType func_type, A
             destroy_request_item(&item);
             goto err;
         }
+        tf_model->nb_requests++;
     }
 
     tf_model->lltask_queue = ff_queue_create();
@@ -666,6 +673,7 @@ static int fill_model_input_tf(TFModel *tf_model, TFRequestItem *request) {
         ret = AVERROR(ENOMEM);
         goto err;
     }
+    infer_request->nb_output = task->nb_output;
 
     for (int i = 0; i < task->nb_output; ++i) {
         infer_request->output_tensors[i] = NULL;
@@ -708,7 +716,18 @@ static void infer_completion_callback(void *args) {
         outputs[i].dims[dnn_get_channel_idx_by_layout(outputs[i].layout)] =
             TF_Dim(infer_request->output_tensors[i], 3);
         outputs[i].data = TF_TensorData(infer_request->output_tensors[i]);
-        outputs[i].dt = (DNNDataType)TF_TensorType(infer_request->output_tensors[i]);
+        switch (TF_TensorType(infer_request->output_tensors[i])) {
+        case TF_FLOAT:
+            outputs[i].dt = DNN_FLOAT;
+            break;
+        case TF_UINT8:
+            outputs[i].dt = DNN_UINT8;
+            break;
+        default:
+            av_log(ctx, AV_LOG_ERROR, "Unsupported output type %d in model\n",
+                   TF_TensorType(infer_request->output_tensors[i]));
+            goto err;
+        }
     }
     switch (tf_model->model.func_type) {
     case DFT_PROCESS_FRAME:
@@ -741,6 +760,7 @@ static void infer_completion_callback(void *args) {
 err:
     tf_free_request(infer_request);
     av_freep(&outputs);
+    av_freep(&request->lltask);
 
     if (ff_safe_queue_push_back(tf_model->request_queue, request) < 0) {
         destroy_request_item(&request);
@@ -787,6 +807,7 @@ static int execute_model_tf(TFRequestItem *request, Queue *lltask_queue)
     }
 err:
     tf_free_request(request->infer_request);
+    av_freep(&request->lltask);
     if (ff_safe_queue_push_back(tf_model->request_queue, request) < 0) {
         destroy_request_item(&request);
     }
@@ -805,6 +826,24 @@ static int dnn_execute_model_tf(const DNNModel *model, DNNExecBaseParams *exec_p
     ret = ff_check_exec_params(ctx, DNN_TF, model->func_type, exec_params);
     if (ret != 0) {
         return ret;
+    }
+
+    for (uint32_t i = 0; i < exec_params->nb_output; i++) {
+        TF_Output tf_output;
+        TF_DataType dt;
+
+        tf_output.oper = TF_GraphOperationByName(tf_model->graph, exec_params->output_names[i]);
+        if (!tf_output.oper || TF_OperationNumOutputs(tf_output.oper) < 1) {
+            av_log(ctx, AV_LOG_ERROR, "Could not find output \"%s\" in model\n",
+                   exec_params->output_names[i]);
+            return AVERROR(EINVAL);
+        }
+        tf_output.index = 0;
+        dt = TF_OperationOutputType(tf_output);
+        if (dt != TF_FLOAT && dt != TF_UINT8) {
+            av_log(ctx, AV_LOG_ERROR, "Unsupported output type %d in model\n", dt);
+            return AVERROR(ENOSYS);
+        }
     }
 
     task = av_malloc(sizeof(*task));
@@ -867,6 +906,7 @@ static int dnn_flush_tf(const DNNModel *model)
     ret = fill_model_input_tf(tf_model, request);
     if (ret != 0) {
         av_log(ctx, AV_LOG_ERROR, "Failed to fill model input.\n");
+        av_freep(&request->lltask);
         if (ff_safe_queue_push_back(tf_model->request_queue, request) < 0) {
             destroy_request_item(&request);
         }

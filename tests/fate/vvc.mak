@@ -6,6 +6,7 @@ VVC_SAMPLES_10BIT =       \
     APSLMCS_D_1           \
     APSMULT_A_4           \
     AUD_A_3               \
+    BOUNDARY_A_3          \
     BUMP_A_2              \
     DCI_A_3               \
     HRD_A_3               \
@@ -36,7 +37,6 @@ VVC_SAMPLES_444_10BIT =   \
     ACT_A_3               \
 
 # not tested:
-# BOUNDARY_A_3 (too big)
 # OPI_B_3 (Inter layer ref support needed)
 # VPS_A_3 (Inter layer ref support needed)
 
@@ -53,6 +53,7 @@ fate-vvc-frames-with-ltr: CMD = framecrc -c:v vvc -i $(TARGET_SAMPLES)/vvc/vvc_f
 fate-vvc-wpp-single-slice-pic: CMD = framecrc -c:v vvc -i $(TARGET_SAMPLES)/vvc/wpp-single-slice-pic.vvc -pix_fmt yuv420p10le -vf scale
 fate-vvc-curr-ltrp-alias: CMD = framecrc -c:v vvc -i $(TARGET_SAMPLES)/vvc/curr-ltrp-alias.vvc
 fate-vvc-mv-clip-wrap: CMD = framecrc -c:v vvc -i $(TARGET_SAMPLES)/vvc/mv-clip-wrap.vvc -pix_fmt yuv420p
+fate-vvc-rpr-weighted-pred: CMD = framecrc -c:v vvc -i $(TARGET_SAMPLES)/vvc/rpr-weighted-pred.vvc -pix_fmt yuv420p10le -vf scale
 
 FATE_VVC-$(call FRAMECRC, VVC, VVC, VVC_PARSER) += $(VVC_TESTS_8BIT) \
                                                    fate-vvc-output-ref \
@@ -64,6 +65,7 @@ FATE_VVC-$(call FRAMECRC, VVC, VVC, VVC_PARSER SCALE_FILTER) +=                 
                                                     $(VVC_TESTS_444_10BIT)        \
                                                     fate-vvc-frames-with-ltr      \
                                                     fate-vvc-wpp-single-slice-pic \
+                                                    fate-vvc-rpr-weighted-pred    \
 
 FATE_SAMPLES_FFMPEG += $(FATE_VVC-yes)
 

@@ -586,17 +586,19 @@ end:
 static int parse_psfile(AVFilterContext *ctx, const char *fname)
 {
     CurvesContext *curves = ctx->priv;
-    uint8_t *buf;
-    size_t size;
+    uint8_t *map, *buf;
+    size_t map_size, size;
     int i, ret, version av_unused, nb_curves;
     AVBPrint ptstr;
     static const int comp_ids[] = {3, 0, 1, 2};
 
     av_bprint_init(&ptstr, 0, AV_BPRINT_SIZE_AUTOMATIC);
 
-    ret = av_file_map(fname, &buf, &size, 0, NULL);
+    ret = av_file_map(fname, &map, &map_size, 0, NULL);
     if (ret < 0)
         return ret;
+    buf  = map;
+    size = map_size;
 
 #define READ16(dst) do {                \
     if (size < 2) {                     \
@@ -635,7 +637,7 @@ static int parse_psfile(AVFilterContext *ctx, const char *fname)
     }
 end:
     av_bprint_finalize(&ptstr, NULL);
-    av_file_unmap(buf, size);
+    av_file_unmap(map, map_size);
     return ret;
 }
 
@@ -880,7 +882,7 @@ static int config_input(AVFilterLink *inlink)
 
     for (i = 0; i < NB_COMP + 1; i++) {
         if (!curves->graph[i])
-            curves->graph[i] = av_calloc(curves->lut_size, sizeof(*curves->graph[0]));
+            curves->graph[i] = av_calloc(1 << (curves->is_16bit ? 16 : 8), sizeof(*curves->graph[0]));
         if (!curves->graph[i])
             return AVERROR(ENOMEM);
         ret = parse_points_str(ctx, comp_points + i, curves->comp_points_str[i], curves->lut_size);

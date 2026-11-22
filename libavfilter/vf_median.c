@@ -143,6 +143,11 @@ static int config_input(AVFilterLink *inlink)
 
     s->nb_threads = FFMAX(1, FFMIN(s->planeheight[1] / (s->radiusV + 1), ff_filter_get_nb_threads(inlink->dst)));
     s->bins   = 1 << ((s->depth + 1) / 2);
+    if (inlink->w > INT_MAX / (s->bins * s->bins)) {
+        av_log(inlink->dst, AV_LOG_ERROR, "Width %d is too large for depth %d\n",
+               inlink->w, s->depth);
+        return AVERROR(EINVAL);
+    }
     s->fine_size = s->bins * s->bins * inlink->w;
     s->coarse_size = s->bins * inlink->w;
     s->coarse = av_calloc(s->nb_threads, sizeof(*s->coarse));
@@ -154,6 +159,21 @@ static int config_input(AVFilterLink *inlink)
         s->fine[i]   = av_malloc_array(s->fine_size, sizeof(**s->fine));
         if (!s->coarse[i] || !s->fine[i])
             return AVERROR(ENOMEM);
+    }
+
+    if (s->depth == 16) {
+        s->row_coarse = av_calloc(s->nb_threads, sizeof(*s->row_coarse));
+        s->row_fine   = av_calloc(s->nb_threads, sizeof(*s->row_fine));
+        s->row_luc    = av_calloc(s->nb_threads, sizeof(*s->row_luc));
+        if (!s->row_coarse || !s->row_fine || !s->row_luc)
+            return AVERROR(ENOMEM);
+        for (int i = 0; i < s->nb_threads; i++) {
+            s->row_coarse[i] = av_malloc_array(s->bins, sizeof(**s->row_coarse));
+            s->row_fine[i]   = av_malloc_array(s->bins * s->bins, sizeof(**s->row_fine));
+            s->row_luc[i]    = av_malloc_array(s->bins, sizeof(**s->row_luc));
+            if (!s->row_coarse[i] || !s->row_fine[i] || !s->row_luc[i])
+                return AVERROR(ENOMEM);
+        }
     }
 
     s->hadd = hadd;
@@ -225,7 +245,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
     av_frame_copy_props(out, in);
 
     td.in = in; td.out = out;
-    ff_filter_execute(ctx, filter_slice, &td, NULL, s->nb_threads);
+    ff_filter_execute(ctx, filter_slice, &td, NULL,
+                      av_clip(s->planeheight[1] / (s->radiusV + 1), 1, s->nb_threads));
 
     av_frame_free(&in);
     return ff_filter_frame(outlink, out);
@@ -235,13 +256,24 @@ static av_cold void uninit(AVFilterContext *ctx)
 {
     MedianContext *s = ctx->priv;
 
-    for (int i = 0; i < s->nb_threads && s->coarse && s->fine; i++) {
-        av_freep(&s->coarse[i]);
-        av_freep(&s->fine[i]);
+    for (int i = 0; i < s->nb_threads; i++) {
+        if (s->coarse)
+            av_freep(&s->coarse[i]);
+        if (s->fine)
+            av_freep(&s->fine[i]);
+        if (s->row_coarse)
+            av_freep(&s->row_coarse[i]);
+        if (s->row_fine)
+            av_freep(&s->row_fine[i]);
+        if (s->row_luc)
+            av_freep(&s->row_luc[i]);
     }
 
     av_freep(&s->coarse);
     av_freep(&s->fine);
+    av_freep(&s->row_coarse);
+    av_freep(&s->row_fine);
+    av_freep(&s->row_luc);
 }
 
 static int process_command(AVFilterContext *ctx, const char *cmd, const char *args,

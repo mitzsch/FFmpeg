@@ -537,7 +537,9 @@ fragment at every frame
 start a new fragment at each video keyframe
 
 @item global_sidx
-write a global sidx index at the start of the file
+write a global sidx index at the start of the file. For fragmented output
+that would otherwise use absolute fragment offsets, this enables
+@samp{default_base_moof}.
 
 @item isml
 create a live smooth streaming feed (for pushing to a publishing point)
@@ -3029,7 +3031,21 @@ hardcoded fixed value.
 Store at most the provided number of milliseconds in a cluster.
 
 If not specified, the limit is set automatically to a sensible
-hardcoded fixed value.
+hardcoded fixed value. The limit cannot exceed 32767 ticks of the
+timestamp scale, 327 milliseconds at 10 microseconds.
+
+@item timestamp_scale @var{nanoseconds}
+Set the clock of the file, in nanoseconds.
+
+If set to @code{0}, the default, the muxer picks the coarsest power of
+ten of a nanosecond, up to a millisecond, that is finer than half a
+sample of every audio stream: 10 microseconds at 44.1 or 48 kHz. With a
+video stream the clock stays at 10 microseconds or above, so that frame
+reordering fits in a cluster. WebM files use a millisecond.
+A value set by this option applies to WebM files too.
+
+Set it to @code{1000000} to write the millisecond clock that most
+Matroska files use.
 
 @item dash @var{bool}
 Create a WebM file conforming to WebM DASH specification. By default
@@ -3425,6 +3441,16 @@ ffmpeg -i INPUT -f_strict experimental -syncpoints none - | processor
 
 Ogg container muxer.
 
+A new link is started on new metadata or extradata of a single Vorbis, FLAC,
+Opus or Theora stream.
+Other outputs ignore new metadata.
+So does Theora on an inter frame.
+New extradata ends them at the current link.
+So does new Theora extradata that changes the frame rate.
+The packet carrying it and the ones that follow are dropped, and their writes
+still return success.
+New extradata on the first packet is ignored.
+
 @table @option
 @item -page_duration @var{duration}
 Preferred page duration, in microseconds. The muxer will attempt to create
@@ -3446,8 +3472,8 @@ number, without ruling it out.
 Links with identical headers and tags always share one, which separately muxed
 outputs avoid with explicit offsets.
 
-A link the muxer starts itself on new stream metadata keeps the offset of the
-link before it.
+A link the muxer starts itself on new stream metadata or extradata keeps the
+offset of the link before it.
 With an explicit offset it then reuses its serial number.
 With the default it does so when its headers and tags are unchanged.
 

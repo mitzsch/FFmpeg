@@ -37,7 +37,6 @@
 #include <stdint.h>
 
 #include "libavutil/attributes.h"
-#include "libavutil/emms.h"
 #include "libavutil/internal.h"
 #include "libavutil/intmath.h"
 #include "libavutil/mathematics.h"
@@ -858,6 +857,10 @@ av_cold int ff_mpv_encode_init(AVCodecContext *avctx)
         m->intra_only = 1; /* force intra only for jpeg */
         avctx->delay = 0;
         s->c.low_delay = 1;
+        if (avctx->codec_id == AV_CODEC_ID_MJPEG) {
+            s->c.y_dc_scale_table =
+            s->c.c_dc_scale_table = ff_mpeg12_dc_scale_table[s->c.intra_dc_precision];
+        }
         break;
 #endif
     case AV_CODEC_ID_SPEEDHQ:
@@ -1197,6 +1200,17 @@ static void mpv_reconstruct_mb(MPVEncContext *const s, int16_t block[12][64])
                 if (s->c.chroma_y_shift) {
                     put_dct(s, block[4], 4, dest_cb, uvlinesize, s->c.chroma_qscale);
                     put_dct(s, block[5], 5, dest_cr, uvlinesize, s->c.chroma_qscale);
+                } else if (!s->c.chroma_x_shift) {
+                    const int uv_dct_linesize = uvlinesize << s->c.interlaced_dct;
+                    const int uv_dct_offset   = s->c.interlaced_dct ? uvlinesize : uvlinesize * block_size;
+                    put_dct(s, block[ 4],  4, dest_cb,                              uv_dct_linesize, s->c.chroma_qscale);
+                    put_dct(s, block[ 5],  5, dest_cr,                              uv_dct_linesize, s->c.chroma_qscale);
+                    put_dct(s, block[ 6],  6, dest_cb + block_size,                 uv_dct_linesize, s->c.chroma_qscale);
+                    put_dct(s, block[ 7],  7, dest_cr + block_size,                 uv_dct_linesize, s->c.chroma_qscale);
+                    put_dct(s, block[ 8],  8, dest_cb + uv_dct_offset,              uv_dct_linesize, s->c.chroma_qscale);
+                    put_dct(s, block[ 9],  9, dest_cr + uv_dct_offset,              uv_dct_linesize, s->c.chroma_qscale);
+                    put_dct(s, block[10], 10, dest_cb + uv_dct_offset + block_size, uv_dct_linesize, s->c.chroma_qscale);
+                    put_dct(s, block[11], 11, dest_cr + uv_dct_offset + block_size, uv_dct_linesize, s->c.chroma_qscale);
                 } else {
                     dct_offset   >>= 1;
                     dct_linesize >>= 1;
@@ -1456,7 +1470,6 @@ static int skip_check(MPVMainEncContext *const m,
             }
         }
     }
-    emms_c();
 
     if (score)
         score64 = score;
@@ -1914,6 +1927,7 @@ int ff_mpv_encode_picture(AVCodecContext *avctx, AVPacket *pkt,
     MPVMainEncContext *const m = avctx->priv_data;
     MPVEncContext    *const s = &m->s;
     int stuffing_count, ret;
+    int seq_end = !pic_arg && m->seq_end;
     int context_count = s->c.slice_context_count;
 
     ff_mpv_unref_picture(&s->c.cur_pic);
@@ -1929,6 +1943,10 @@ int ff_mpv_encode_picture(AVCodecContext *avctx, AVPacket *pkt,
     ret = select_input_picture(m);
     if (ret < 0)
         return ret;
+
+    /* Both queues must be empty after selecting the last picture. */
+    for (int i = 1; seq_end && i <= MPVENC_MAX_B_FRAMES; i++)
+        seq_end = !m->input_picture[i] && !m->reordered_input_picture[i];
 
     /* output? */
     if (s->new_pic->data[0]) {
@@ -1965,7 +1983,7 @@ vbv_retry:
             pkt->size = avctx->internal->byte_buffer_size;
         }
         if (ret < 0)
-            return -1;
+            return ret;
 
         frame_end(m);
 
@@ -1978,7 +1996,7 @@ vbv_retry:
             int hq = (avctx->mb_decision == FF_MB_DECISION_RD || avctx->trellis);
             int min_step = hq ? 1 : (1<<(FF_LAMBDA_SHIFT + 7))/139;
 
-            if (put_bits_count(&s->pb) > max_size &&
+            if (put_bits_count(&s->pb) + 32 * seq_end > max_size &&
                 s->lambda < m->lmax) {
                 m->next_lambda = FFMAX(s->lambda + min_step, s->lambda *
                                        (s->c.qscale + 1) / s->c.qscale);
@@ -2023,7 +2041,8 @@ vbv_retry:
         flush_put_bits(&s->pb);
         m->frame_bits  = put_bits_count(&s->pb);
 
-        stuffing_count = ff_vbv_update(m, m->frame_bits);
+        /* The sequence end code is part of the last picture's VBV size. */
+        stuffing_count = ff_vbv_update(m, m->frame_bits + 32 * seq_end);
         m->stuffing_bits = 8*stuffing_count;
         if (stuffing_count) {
             if (put_bytes_left(&s->pb, 0) < stuffing_count + 50) {
@@ -2052,6 +2071,12 @@ vbv_retry:
             }
             flush_put_bits(&s->pb);
             m->frame_bits  = put_bits_count(&s->pb);
+        }
+
+        if (seq_end) {
+            put_bits32(&s->pb, 0x1B7); // sequence_end_code
+            flush_put_bits(&s->pb);
+            m->frame_bits = put_bits_count(&s->pb);
         }
 
         /* update MPEG-1/2 vbv_delay for CBR */
@@ -2862,7 +2887,10 @@ static int mb_var_thread(AVCodecContext *c, void *arg){
     return 0;
 }
 
-static void write_slice_end(MPVEncContext *const s)
+/**
+ * @param last_mb_y row of the last coded macroblock
+ */
+static void write_slice_end(MPVEncContext *const s, int last_mb_y)
 {
     if (CONFIG_MPEG4_ENCODER && s->c.codec_id == AV_CODEC_ID_MPEG4) {
         if (s->partitioned_frame)
@@ -2871,7 +2899,7 @@ static void write_slice_end(MPVEncContext *const s)
         ff_mpeg4_stuffing(&s->pb);
     } else if ((CONFIG_MJPEG_ENCODER || CONFIG_AMV_ENCODER) &&
                s->c.out_format == FMT_MJPEG) {
-        ff_mjpeg_encode_stuffing(s);
+        ff_mjpeg_encode_stuffing(s, last_mb_y);
     } else if (CONFIG_SPEEDHQ_ENCODER && s->c.out_format == FMT_SPEEDHQ) {
         ff_speedhq_end_slice(s);
     }
@@ -2932,8 +2960,6 @@ int ff_mpv_reallocate_putbitbuffer(MPVEncContext *const s, size_t threshold, siz
             return AVERROR(ENOMEM);
         }
 
-        emms_c();
-
         av_fast_padded_malloc(&new_buffer, &new_buffer_size,
                               s->c.avctx->internal->byte_buffer_size + size_increase);
         if (!new_buffer)
@@ -2953,6 +2979,7 @@ int ff_mpv_reallocate_putbitbuffer(MPVEncContext *const s, size_t threshold, siz
 
 static int encode_thread(AVCodecContext *c, void *arg){
     MPVEncContext *const s = *(void**)arg;
+    int chr_w = 16 >> s->c.chroma_x_shift;
     int chr_h = 16 >> s->c.chroma_y_shift;
     int i;
     MBBackup best_s = { 0 }, backup_s;
@@ -3082,7 +3109,7 @@ static int encode_thread(AVCodecContext *c, void *arg){
 
                 if(is_gob_start){
                     if (s->c.start_mb_y != mb_y || mb_x != 0) {
-                        write_slice_end(s);
+                        write_slice_end(s, mb_y - !mb_x);
 
                         if (CONFIG_MPEG4_ENCODER && s->c.codec_id == AV_CODEC_ID_MPEG4 && s->partitioned_frame)
                             ff_mpeg4_init_partitions(s);
@@ -3564,11 +3591,11 @@ static int encode_thread(AVCodecContext *c, void *arg){
                     s, s->new_pic->data[0] + s->c.mb_x*16 + s->c.mb_y*s->c.linesize*16,
                     s->c.dest[0], w, h, s->c.linesize);
                 s->encoding_error[1] += sse(
-                    s, s->new_pic->data[1] + s->c.mb_x*8  + s->c.mb_y*s->c.uvlinesize*chr_h,
-                    s->c.dest[1], w>>1, h>>s->c.chroma_y_shift, s->c.uvlinesize);
+                    s, s->new_pic->data[1] + s->c.mb_x*chr_w + s->c.mb_y*s->c.uvlinesize*chr_h,
+                    s->c.dest[1], w>>s->c.chroma_x_shift, h>>s->c.chroma_y_shift, s->c.uvlinesize);
                 s->encoding_error[2] += sse(
-                    s, s->new_pic->data[2] + s->c.mb_x*8  + s->c.mb_y*s->c.uvlinesize*chr_h,
-                    s->c.dest[2], w>>1, h>>s->c.chroma_y_shift, s->c.uvlinesize);
+                    s, s->new_pic->data[2] + s->c.mb_x*chr_w + s->c.mb_y*s->c.uvlinesize*chr_h,
+                    s->c.dest[2], w>>s->c.chroma_x_shift, h>>s->c.chroma_y_shift, s->c.uvlinesize);
             }
             if (s->loop_filter) {
                 if (CONFIG_H263_ENCODER && s->c.out_format == FMT_H263)
@@ -3586,7 +3613,7 @@ static int encode_thread(AVCodecContext *c, void *arg){
         ff_msmpeg4_encode_ext_header(s);
 #endif
 
-    write_slice_end(s);
+    write_slice_end(s, s->c.mb_y);
 
     return 0;
 }
@@ -3706,7 +3733,9 @@ static int encode_picture(MPVMainEncContext *const m, const AVPacket *pkt)
         ret = estimate_qp(m, 1);
         if (ret < 0)
             return ret;
-        ff_get_2pass_fcode(m);
+        ret = ff_get_2pass_fcode(m);
+        if (ret < 0)
+            return ret;
     } else if (!(s->c.avctx->flags & AV_CODEC_FLAG_QSCALE)) {
         if (s->c.pict_type == AV_PICTURE_TYPE_B)
             s->lambda = m->last_lambda_for[s->c.pict_type];
@@ -3765,7 +3794,6 @@ static int encode_picture(MPVMainEncContext *const m, const AVPacket *pkt)
         merge_context_after_me(s, s->c.enc_contexts[i]);
     m->mc_mb_var_sum = s->me.mc_mb_var_sum_temp;
     m->mb_var_sum    = s->me.   mb_var_sum_temp;
-    emms_c();
 
     if (s->me.scene_change_score > m->scenechange_threshold &&
         s->c.pict_type == AV_PICTURE_TYPE_P) {
@@ -3863,9 +3891,7 @@ static int encode_picture(MPVMainEncContext *const m, const AVPacket *pkt)
                 s->c.chroma_intra_matrix[j] = av_clip_uint8((chroma_matrix[i] * s->c.qscale) >> 3);
                 s->c.       intra_matrix[j] = av_clip_uint8((  luma_matrix[i] * s->c.qscale) >> 3);
             }
-            s->c.y_dc_scale_table =
-            s->c.c_dc_scale_table = ff_mpeg12_dc_scale_table[0];
-            s->c.chroma_intra_matrix[0] = s->c.intra_matrix[0] = 8;
+            s->c.chroma_intra_matrix[0] = s->c.intra_matrix[0] = 8 >> s->c.intra_dc_precision;
         } else {
             static const uint8_t y[32] = {13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13};
             static const uint8_t c[32] = {14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14};
@@ -3914,7 +3940,6 @@ static int encode_picture(MPVMainEncContext *const m, const AVPacket *pkt)
             set_put_bits_buffer_size(&s->pb, FFMIN(s->c.enc_contexts[i]->pb.buf_end - s->pb.buf, INT_MAX/8-BUF_BITS));
         merge_context_after_encode(s, s->c.enc_contexts[i]);
     }
-    emms_c();
     return 0;
 }
 
@@ -4244,7 +4269,6 @@ static DECLARE_ALIGNED(16, int16_t, basis)[64][64];
 
 static void build_basis(uint8_t *perm){
     int i, j, x, y;
-    emms_c();
     for(i=0; i<8; i++){
         for(j=0; j<8; j++){
             for(y=0; y<8; y++){

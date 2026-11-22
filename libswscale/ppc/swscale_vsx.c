@@ -32,7 +32,6 @@
 #include "yuv2rgb_altivec.h"
 #include "libavutil/ppc/util_altivec.h"
 
-#if HAVE_VSX
 #define vzero vec_splat_s32(0)
 
 #if !HAVE_BIGENDIAN
@@ -457,28 +456,32 @@ yuv2NBPSX(16, LE, 0, 16, int32_t)
         bd = vec_packsu(bd16, zero16); \
 \
         switch(target) { \
-        case AV_PIX_FMT_RGB24: \
+        case AV_PIX_FMT_RGB24: { \
+            DECLARE_ALIGNED(16, uint8_t, tmp_out)[16]; \
             out0 = vec_perm(rd, gd, perm3rg0); \
             out0 = vec_perm(out0, bd, perm3tb0); \
             out1 = vec_perm(rd, gd, perm3rg1); \
             out1 = vec_perm(out1, bd, perm3tb1); \
 \
             vec_vsx_st(out0, 0, dest); \
-            vec_vsx_st(out1, 16, dest); \
+            vec_vsx_st(out1, 0, tmp_out); \
+            memcpy(dest + 16, tmp_out, 8); \
 \
             dest += 24; \
-        break; \
-        case AV_PIX_FMT_BGR24: \
+        break; } \
+        case AV_PIX_FMT_BGR24: { \
+            DECLARE_ALIGNED(16, uint8_t, tmp_out)[16]; \
             out0 = vec_perm(bd, gd, perm3rg0); \
             out0 = vec_perm(out0, rd, perm3tb0); \
             out1 = vec_perm(bd, gd, perm3rg1); \
             out1 = vec_perm(out1, rd, perm3tb1); \
 \
             vec_vsx_st(out0, 0, dest); \
-            vec_vsx_st(out1, 16, dest); \
+            vec_vsx_st(out1, 0, tmp_out); \
+            memcpy(dest + 16, tmp_out, 8); \
 \
             dest += 24; \
-        break; \
+        break; } \
         case AV_PIX_FMT_BGRA: \
             out0 = vec_mergeh(bd, gd); \
             out1 = vec_mergeh(rd, ad); \
@@ -2014,17 +2017,11 @@ static void hScale16To15_vsx(SwsInternal *c, int16_t *dst, int dstW,
 
 #endif /* !HAVE_BIGENDIAN */
 
-#endif /* HAVE_VSX */
-
 av_cold void ff_sws_init_swscale_vsx(SwsInternal *c)
 {
-#if HAVE_VSX
     enum AVPixelFormat dstFormat = c->opts.dst_format;
     const int cpu_flags = av_get_cpu_flags();
     const unsigned char power8 = HAVE_POWER8 && cpu_flags & AV_CPU_FLAG_POWER8;
-
-    if (!(cpu_flags & AV_CPU_FLAG_VSX))
-        return;
 
 #if !HAVE_BIGENDIAN
     if (c->srcBpc == 8) {
@@ -2203,6 +2200,4 @@ av_cold void ff_sws_init_swscale_vsx(SwsInternal *c)
         }
     }
 #endif /* !HAVE_BIGENDIAN */
-
-#endif /* HAVE_VSX */
 }
