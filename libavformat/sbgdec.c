@@ -217,9 +217,9 @@ static inline int is_space(char c)
 static inline int scale_double(void *log, double d, double m, int *r)
 {
     m *= d * SBG_SCALE;
-    if (m < INT_MIN || m >= INT_MAX) {
+    if (isnan(m) || m < INT_MIN || m >= INT_MAX) {
         if (log)
-            av_log(log, AV_LOG_ERROR, "%g is too large\n", d);
+            av_log(log, AV_LOG_ERROR, "%g is %s\n", d, isnan(m) ? "not a valid number" : "too large");
         return AVERROR(EDOM);
     }
     *r = m;
@@ -1427,7 +1427,7 @@ static av_cold int sbg_read_header(AVFormatContext *avf)
     else
         script.sample_rate = sbg->sample_rate;
     if (!sbg->frame_size)
-        sbg->frame_size = FFMAX(1, sbg->sample_rate / 10);
+        sbg->frame_size = av_clip(sbg->sample_rate / 10, 1, 19200);
     if (script.opt_mix)
         av_log(avf, AV_LOG_WARNING, "Mix feature not implemented: "
                "-m is ignored and mix channels will be silent.\n");

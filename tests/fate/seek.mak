@@ -184,11 +184,14 @@ FATE_SEEK += $(FATE_SEEK_LAVF_IMAGE2PIPE)
 FATE_SEEK_EXTRA-$(CONFIG_MP3_DEMUXER)   += fate-seek-extra-mp3
 FATE_SEEK_EXTRA-$(call ALLYES, CACHE_PROTOCOL PIPE_PROTOCOL MP3_DEMUXER) += fate-seek-cache-pipe
 FATE_SEEK_EXTRA-$(CONFIG_MATROSKA_DEMUXER) += fate-seek-mkv-codec-delay
+FATE_SEEK_EXTRA-$(call ALLYES, MATROSKA_DEMUXER H264_PARSER) += fate-seek-mkv-best-fit-ts
 FATE_SEEK_EXTRA-$(call ALLYES, MOV_DEMUXER) += fate-seek-extra-mp4
 FATE_SEEK_EXTRA-$(call ALLYES, MOV_DEMUXER) += fate-seek-empty-edit-mp4
 FATE_SEEK_EXTRA-$(call ALLYES, MOV_DEMUXER) += fate-seek-test-iibbibb-mp4
 FATE_SEEK_EXTRA-$(call ALLYES, MOV_DEMUXER) += fate-seek-test-iibbibb-neg-ctts-mp4
 FATE_SEEK_EXTRA-$(CONFIG_WAV_DEMUXER)       += fate-seek-bad-avg-byterate
+FATE_SEEK_EXTRA-$(CONFIG_SACD_DEMUXER)      += fate-seek-sacd
+FATE_SEEK_EXTRA-$(CONFIG_DSS_DEMUXER)       += fate-seek-dss-sp
 
 fate-seek-extra-mp3:  CMD = run libavformat/tests/seek$(EXESUF) $(TARGET_SAMPLES)/gapless/gapless.mp3 -fastseek 1
 fate-seek-bad-avg-byterate: CMD = run libavformat/tests/seek$(EXESUF) $(TARGET_SAMPLES)/wav/wrong-avg-byterate.wav -seekback 500 -stream_id 0
@@ -198,13 +201,16 @@ fate-seek-test-iibbibb-mp4:  CMD = run libavformat/tests/seek$(EXESUF) $(TARGET_
 fate-seek-test-iibbibb-neg-ctts-mp4:  CMD = run libavformat/tests/seek$(EXESUF) $(TARGET_SAMPLES)/mov/test_iibbibb_neg_ctts.mp4 -duration 13 -frames 4
 fate-seek-cache-pipe: CMD = cat $(SAMPLES)/gapless/gapless.mp3 | run libavformat/tests/seek$(EXESUF) cache:pipe:0 -read_ahead_limit -1
 fate-seek-mkv-codec-delay:   CMD = run libavformat/tests/seek$(EXESUF) $(TARGET_SAMPLES)/mkv/codec_delay_opus.mkv
+fate-seek-mkv-best-fit-ts:   CMD = run libavformat/tests/seek$(EXESUF) $(TARGET_SAMPLES)/mkv/test7_cut.mkv -duration 4 -frames 3 -best_fit_ts 1
+fate-seek-sacd: CMD = run libavformat/tests/seek$(EXESUF) $(TARGET_SAMPLES)/sacd/2ch-dsd_5ch-dst.iso -duration 2
+fate-seek-dss-sp:     CMD = run libavformat/tests/seek$(EXESUF) $(TARGET_SAMPLES)/dss/sp.dss -duration 10
 
 # A master playlist with separate audio and video media playlists with different DTS.
 tests/data/hls-seek.m3u8: ffmpeg$(PROGSSUF)$(EXESUF) | tests/data
 	$(M)$(TARGET_EXEC) $(TARGET_PATH)/$< -nostdin \
         -f lavfi -i "testsrc2=size=128x72:rate=10:d=6" \
         -f lavfi -i "aevalsrc=cos(2*PI*t)*sin(2*PI*(440+4*t)*t):d=6" \
-        -map 0:v -map 1:a -c:v mpeg2video -bf 2 -g 15 -dct int -idct int -flags +bitexact -c:a mp2fixed \
+        -map 0:v -map 1:a -c:v mpeg2video -threads:v 1 -bf 2 -g 15 -dct int -idct int -flags +bitexact -c:a mp2fixed \
         -f hls -hls_time 2 -hls_list_size 0 \
         -var_stream_map "v:0,agroup:a a:0,agroup:a,default:yes" -master_pl_name hls-seek.m3u8 \
         -hls_segment_filename $(TARGET_PATH)/tests/data/hls-seek-s%v-%d.ts \

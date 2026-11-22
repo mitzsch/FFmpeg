@@ -353,8 +353,9 @@ static const struct URLProtocol *url_find_protocol(const char *filename)
     av_freep(&protocols);
     if (av_strstart(filename, "https:", NULL) || av_strstart(filename, "tls:", NULL) ||
         av_strstart(filename, "dtls:", NULL))
-        av_log(NULL, AV_LOG_WARNING, "https or dtls protocol not found, recompile FFmpeg with "
-                                     "openssl, gnutls or securetransport enabled.\n");
+        av_log(NULL, AV_LOG_WARNING, "https, tls or dtls protocol not found, recompile FFmpeg with "
+                                     "openssl, gnutls, mbedtls or schannel enabled "
+                                     "(securetransport is deprecated by Apple and lacks TLS 1.3).\n");
 
     return NULL;
 }
@@ -797,7 +798,7 @@ struct AVIODirContext {
     struct URLContext *url_context;
 };
 
-int avio_open_dir(AVIODirContext **s, const char *url, AVDictionary **options)
+int avio_open_dir2(AVIODirContext **s, const char *url, const AVIOInterruptCB *int_cb, AVDictionary **options)
 {
     URLContext *h = NULL;
     AVIODirContext *ctx = NULL;
@@ -810,7 +811,7 @@ int avio_open_dir(AVIODirContext **s, const char *url, AVDictionary **options)
         goto fail;
     }
 
-    if ((ret = ffurl_alloc(&h, url, AVIO_FLAG_READ, NULL)) < 0)
+    if ((ret = ffurl_alloc(&h, url, AVIO_FLAG_READ, int_cb)) < 0)
         goto fail;
 
     if (h->prot->url_open_dir && h->prot->url_read_dir && h->prot->url_close_dir) {
@@ -833,6 +834,11 @@ int avio_open_dir(AVIODirContext **s, const char *url, AVDictionary **options)
     *s = NULL;
     ffurl_close(h);
     return ret;
+}
+
+int avio_open_dir(AVIODirContext **s, const char *url, AVDictionary **options)
+{
+    return avio_open_dir2(s, url, NULL, options);
 }
 
 int avio_read_dir(AVIODirContext *s, AVIODirEntry **next)

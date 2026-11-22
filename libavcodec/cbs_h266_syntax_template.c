@@ -907,7 +907,8 @@ static int FUNC(vps) (CodedBitstreamContext *ctx, RWContext *rw,
                 }
             }
             if (!num_output_layers_in_ols[i])
-                return AVERROR_INVALIDDATA;
+                av_log(ctx->log_ctx, AV_LOG_DEBUG,
+                       "OLS %d has no output layers.\n", i);
         }
         for (i = 1; i < total_num_olss; i++) {
             int num_layers_in_ols = 0;
@@ -1116,12 +1117,12 @@ static int FUNC(sps)(CodedBitstreamContext *ctx, RWContext *rw,
 
     flag(sps_conformance_window_flag);
     if (current->sps_conformance_window_flag) {
-        uint16_t width = current->sps_pic_width_max_in_luma_samples / sub_width_c;
-        uint16_t height = current->sps_pic_height_max_in_luma_samples / sub_height_c;
-        ue(sps_conf_win_left_offset, 0, width);
-        ue(sps_conf_win_right_offset, 0, width - current->sps_conf_win_left_offset);
-        ue(sps_conf_win_top_offset, 0, height);
-        ue(sps_conf_win_bottom_offset, 0, height - current->sps_conf_win_top_offset);
+        uint16_t max_offsets_x = (current->sps_pic_width_max_in_luma_samples - 1) / sub_width_c;
+        uint16_t max_offsets_y = (current->sps_pic_height_max_in_luma_samples - 1) / sub_height_c;
+        ue(sps_conf_win_left_offset, 0, max_offsets_x);
+        ue(sps_conf_win_right_offset, 0, max_offsets_x - current->sps_conf_win_left_offset);
+        ue(sps_conf_win_top_offset, 0, max_offsets_y);
+        ue(sps_conf_win_bottom_offset, 0, max_offsets_y - current->sps_conf_win_top_offset);
     } else {
         infer(sps_conf_win_left_offset, 0);
         infer(sps_conf_win_right_offset, 0);
@@ -1587,7 +1588,7 @@ static int FUNC(sps)(CodedBitstreamContext *ctx, RWContext *rw,
 
     flag(sps_virtual_boundaries_enabled_flag);
     if (current->sps_virtual_boundaries_enabled_flag) {
-        flag(sps_virtual_boundaries_present_flag);
+        u(1, sps_virtual_boundaries_present_flag, 0, !current->sps_res_change_in_clvs_allowed_flag);
         if (current->sps_virtual_boundaries_present_flag) {
             ue(sps_num_ver_virtual_boundaries,
                0, current->sps_pic_width_max_in_luma_samples <= 8 ? 0 : VVC_MAX_VBS);
@@ -2024,12 +2025,13 @@ static int FUNC(pps) (CodedBitstreamContext *ctx, RWContext *rw,
 
                         for (j = 0; j < current->pps_num_exp_slices_in_tile[i];
                              j++) {
-                            ues(pps_exp_slice_height_in_ctus_minus1[i][j], 0,
+                            xue(pps_exp_slice_height_in_ctus_minus1[i][j],
+                                current->pps_exp_slice_height_in_ctus_minus1[i + j], 0,
                                 remaining_height_in_ctbs_y - (current->pps_num_exp_slices_in_tile[i] - j), 2,
                                 i, j);
                             slice_height_in_ctus =
                                 current->
-                                pps_exp_slice_height_in_ctus_minus1[i][j] + 1;
+                                pps_exp_slice_height_in_ctus_minus1[i + j] + 1;
 
                             current->slice_height_in_ctus[i + j] =
                                 slice_height_in_ctus;
@@ -2041,7 +2043,7 @@ static int FUNC(pps) (CodedBitstreamContext *ctx, RWContext *rw,
                         }
                         uniform_slice_height = 1 +
                             (j == 0 ? current->row_height_val[tile_y] - 1:
-                            current->pps_exp_slice_height_in_ctus_minus1[i][j-1]);
+                            current->pps_exp_slice_height_in_ctus_minus1[i + j - 1]);
 
                         num_uniform_slices = (remaining_height_in_ctbs_y + uniform_slice_height - 1)
                                            / uniform_slice_height;

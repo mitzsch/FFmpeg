@@ -257,7 +257,7 @@ static int check_exprs(AVFilterContext *ctx)
 static int scale_parse_expr(AVFilterContext *ctx, char *str_expr, AVExpr **pexpr_ptr, const char *var, const char *args)
 {
     ScaleContext *scale = ctx->priv;
-    int ret, is_inited = 0;
+    int ret, is_inited = 0, old_uses_ref = scale->uses_ref;
     char *old_str_expr = NULL;
     AVExpr *old_pexpr = NULL;
 
@@ -285,6 +285,12 @@ static int scale_parse_expr(AVFilterContext *ctx, char *str_expr, AVExpr **pexpr
     if (ret < 0)
         goto revert;
 
+    if (is_inited && scale->uses_ref && ctx->nb_inputs == 1) {
+        av_log(ctx, AV_LOG_ERROR, "Expressions with ref variables need the ref input, a command cannot add it.\n");
+        ret = AVERROR(EINVAL);
+        goto revert;
+    }
+
     if (is_inited && (ret = config_props(ctx->outputs[0])) < 0)
         goto revert;
 
@@ -295,6 +301,7 @@ static int scale_parse_expr(AVFilterContext *ctx, char *str_expr, AVExpr **pexpr
     return 0;
 
 revert:
+    scale->uses_ref = old_uses_ref;
     av_expr_free(*pexpr_ptr);
     *pexpr_ptr = NULL;
     if (old_str_expr) {
@@ -1136,7 +1143,7 @@ static const AVOption scale_options[] = {
         {"smpte432",     NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_PRI_SMPTE432},      0, 0, FLAGS, .unit = "primaries"},
         {"jedec-p22",    NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_PRI_JEDEC_P22},     0, 0, FLAGS, .unit = "primaries"},
         {"ebu3213",      NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_PRI_EBU3213},       0, 0, FLAGS, .unit = "primaries"},
-    { "in_transfer", "set output color transfer", OFFSET(in_transfer),  AV_OPT_TYPE_INT, { .i64 = -1 }, -1, AVCOL_TRC_NB-1, .flags = FLAGS, .unit = "transfer"},
+    { "in_transfer", "set input color transfer",  OFFSET(in_transfer),  AV_OPT_TYPE_INT, { .i64 = -1 }, -1, AVCOL_TRC_NB-1, .flags = FLAGS, .unit = "transfer"},
     {"out_transfer", "set output color transfer", OFFSET(out_transfer), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, AVCOL_TRC_NB-1, .flags = FLAGS, .unit = "transfer"},
         {"auto",         NULL,  0, AV_OPT_TYPE_CONST, {.i64=-1},                      0, 0, FLAGS, .unit = "transfer"},
         {"bt709",        NULL,  0, AV_OPT_TYPE_CONST, {.i64=AVCOL_TRC_BT709},         0, 0, FLAGS, .unit = "transfer"},

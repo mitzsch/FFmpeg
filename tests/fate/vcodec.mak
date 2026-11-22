@@ -245,13 +245,20 @@ fate-vsynth3-magicyuv:                ENCOPTS = -pix_fmt yuv444p -pred median \
 fate-vsynth_lena-magicyuv:            ENCOPTS = -slices 3 -pix_fmt gray -pred left
 fate-vsynth%-magicyuv:                DECOPTS = -sws_flags neighbor+bitexact
 
-FATE_VCODEC_SCALE-$(call ENCDEC, MJPEG, AVI) += mjpeg mjpeg-422 mjpeg-444 mjpeg-trell mjpeg-huffman mjpeg-trell-huffman
+# Exercise both row and slice boundaries, RST7 wraparound, and the final row.
+FATE_MJPEG_RST-$(call ENCMUX, MJPEG, FRAMECRC, TESTSRC2_FILTER FORMAT_FILTER PIPE_PROTOCOL) += fate-mjpeg-slice-rst
+fate-mjpeg-slice-rst: CMD = framecrc -lavfi testsrc2=size=16x160:rate=1:duration=2,format=yuvj420p \
+                                  -c:v mjpeg -dct int -huffman default -threads 1 -slices 2
+FATE_FFMPEG += $(FATE_MJPEG_RST-yes)
+
+FATE_VCODEC_SCALE-$(call ENCDEC, MJPEG, AVI) += mjpeg mjpeg-422 mjpeg-444 mjpeg-trell mjpeg-huffman mjpeg-trell-huffman mjpeg-dcprec
 fate-vsynth%-mjpeg:                   ENCOPTS = -qscale 9 -pix_fmt yuvj420p -huffman default -threads 5 -thread_type slice
 fate-vsynth%-mjpeg-422:               ENCOPTS = -qscale 9 -pix_fmt yuvj422p
 fate-vsynth%-mjpeg-444:               ENCOPTS = -qscale 9 -pix_fmt yuvj444p
 fate-vsynth%-mjpeg-trell:             ENCOPTS = -qscale 9 -pix_fmt yuvj420p -trellis 1 -huffman default
 fate-vsynth%-mjpeg-huffman:           ENCOPTS = -qscale 9 -pix_fmt yuvj420p -huffman optimal
 fate-vsynth%-mjpeg-trell-huffman:     ENCOPTS = -qscale 9 -pix_fmt yuvj420p -trellis 1 -huffman optimal
+fate-vsynth%-mjpeg-dcprec:            ENCOPTS = -qscale 9 -pix_fmt yuvj420p -intra_dc_precision 3 -huffman default -threads 5 -thread_type slice
 
 FATE_VCODEC-$(call ENCDEC, MPEG1VIDEO, MPEG1VIDEO MPEGVIDEO) += mpeg1 mpeg1b
 fate-vsynth%-mpeg1:              FMT     = mpeg1video
@@ -469,6 +476,10 @@ FATE_VCODEC_SCALE-$(call ENCDEC, R210, AVI)   += r210
 FATE_VCODEC_SCALE-$(call ENCDEC, V210, AVI)   += v210 v210-10
 fate-vsynth%-v210-10:            ENCOPTS = -pix_fmt yuv422p10
 
+FATE_FFMPEG-$(call TRANSCODE, V210, AVI, LAVFI_INDEV WRAPPED_AVFRAME_DECODER TESTSRC2_FILTER FORMAT_FILTER SCALE_FILTER) += fate-v210-strideless
+fate-v210-strideless: CMD = transcode lavfi "testsrc2=size=48x4:rate=1,format=yuv422p10le" avi \
+    "-vf scale -pix_fmt yuv422p10 -c:v v210 -frames:v 1" "-vf scale -pix_fmt yuv422p10le" "" "" "-custom_stride -1 -threads 1"
+
 FATE_VCODEC_SCALE-$(call ENCDEC, RAWVIDEO, AVI) += v308
 fate-vsynth%-v308:               ENCOPTS = -pix_fmt vyu444 -sws_flags neighbor+bitexact
 fate-vsynth%-v308:               DECOPTS = -sws_flags neighbor+bitexact
@@ -543,4 +554,4 @@ fate-vsynth1: $(FATE_VSYNTH1)
 fate-vsynth2: $(FATE_VSYNTH2)
 fate-vsynth_lena: $(FATE_VSYNTH_LENA)
 fate-vsynth3: $(FATE_VSYNTH3)
-fate-vcodec:  fate-vsynth1 fate-vsynth_lena fate-vsynth2 fate-vsynth3
+fate-vcodec:  fate-vsynth1 fate-vsynth_lena fate-vsynth2 fate-vsynth3 $(FATE_MJPEG_RST-yes)

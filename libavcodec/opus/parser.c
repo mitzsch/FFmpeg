@@ -91,7 +91,8 @@ static int set_frame_duration(AVCodecParserContext *ctx, AVCodecContext *avctx,
         return AVERROR_INVALIDDATA;
     }
 
-    ctx->duration = s->pkt.frame_count * s->pkt.frame_duration;
+    ctx->duration = av_rescale(s->pkt.frame_count * s->pkt.frame_duration,
+                               avctx->sample_rate, OPUS_TIMESTAMP_RATE);
 
     return 0;
 }
@@ -177,10 +178,12 @@ static int opus_parse(AVCodecParserContext *ctx, AVCodecContext *avctx,
     ParseContext *pc    = &s->pc;
     int next, header_len = 0;
 
-    avctx->sample_rate = 48000;
+    if (!avctx->sample_rate)
+        avctx->sample_rate = 48000;
 
     if (avctx->extradata && !s->extradata_parsed) {
-        if (ff_opus_parse_extradata(avctx, &s->ctx) < 0) {
+        if (ff_opus_parse_extradata(avctx, &s->ctx, avctx->extradata,
+                                    avctx->extradata_size) < 0) {
             av_log(avctx, AV_LOG_ERROR, "Error parsing Ogg extradata.\n");
             goto fail;
         }

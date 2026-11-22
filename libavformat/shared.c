@@ -166,6 +166,7 @@ typedef struct SharedContext {
     /* options */
     char *cache_dir;
     char *metadata_dir;
+    char *cache_key;
     int block_shift; ///< requested shift; updated on init if it disagrees
     int read_only;
     int64_t timeout;
@@ -174,6 +175,7 @@ typedef struct SharedContext {
     int retry_corrupt;
     int verify;
     int64_t cache_size_max;
+    int64_t offset;
 
     /* misc state */
     int64_t pos; ///< current logical position
@@ -296,15 +298,31 @@ static int shared_open(URLContext *h, const char *arg, int flags, AVDictionary *
     } else if (ret < 0)
         goto fail;
 
+    const char *cache_key = s->cache_key;
+    if (cache_key) {
+        if (strchr(cache_key, '/') || strchr(cache_key, '\\')) {
+            av_log(h, AV_LOG_ERROR, "Invalid cache key '%s': must not contain "
+                   "path separators\n", cache_key);
+            ret = AVERROR(EINVAL);
+            goto fail;
+        } else if (!cache_key[0])
+            cache_key = NULL;
+    }
+
     uint8_t hash[HASH_SIZE];
-    ret = hash_uri(hash, arg);
+    ret = hash_uri(hash, cache_key ? cache_key : arg);
     if (ret < 0)
         goto fail;
 
     /* 128 bits is enough for collision resistance; we already store the full
      * hash inside the header for verification */
-    char filename[2 * 16 + 1];
-    ff_data_to_hex(filename, hash, sizeof(filename)/2, 0);
+    const char *filename = cache_key;
+    char buf[2 * 16 + 1];
+    if (!filename) {
+        ff_data_to_hex(buf, hash, sizeof(buf)/2, 0);
+        filename = buf;
+    }
+
     s->cache_path = av_asprintf("%s/%s.cache",    s->cache_dir, filename);
     s->map_path   = av_asprintf("%s/%s.spacemap", spacemap_dir, filename);
     if (!s->cache_path || !s->map_path) {
@@ -364,6 +382,7 @@ static int shared_open(URLContext *h, const char *arg, int flags, AVDictionary *
 
     h->max_packet_size = s->block_size;
     h->min_packet_size = s->block_size;
+    s->pos = s->offset;
     ret = 0;
 
 fail:
@@ -941,13 +960,16 @@ static const AVOption options[] = {
     { "cache_dir",      "Directory path for shared file cache",             OFFSET(cache_dir),      AV_OPT_TYPE_STRING, {.str = NULL}, .flags = D },
     { "metadata_dir",   "Directory path for shared file cache metadata",    OFFSET(metadata_dir),   AV_OPT_TYPE_STRING, {.str = NULL}, .flags = D },
     { "block_shift",    "Set the base 2 logarithm of the block size",       OFFSET(block_shift),    AV_OPT_TYPE_INT, {.i64 = 15}, 9, 30, .flags = D },
-    { "read_only",      "Don't write data to the cache, only read from it", OFFSET(read_only),      AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, .flags = D },
+    { "cache_read_only","Don't write data to the cache, only read from it", OFFSET(read_only),      AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, .flags = D },
+    { "read_only",      "Deprecated, use cache_read_only",                  OFFSET(read_only),      AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, .flags = D|AV_OPT_FLAG_DEPRECATED },
     { "cache_verify",   "Verify correctness of the cache against the source",   OFFSET(verify),     AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, .flags = D },
     { "cache_timeout",  "Time in us to wait before re-fetching pending blocks", OFFSET(timeout),    AV_OPT_TYPE_INT64, {.i64 = 10000}, 0, INT64_MAX, .flags = D },
     { "ignore_errors",  "Continue even if the inner URL failed",            OFFSET(ignore_errors),  AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, .flags = D },
     { "retry_errors",   "Re-request blocks even if they previously failed", OFFSET(retry_errors),   AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, .flags = D },
     { "retry_corrupt",  "Re-request blocks that fail the CRC check",        OFFSET(retry_corrupt),  AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, .flags = D },
     { "cache_size_max", "Limit the maximum amount of data cached",          OFFSET(cache_size_max), AV_OPT_TYPE_INT64, {.i64 = 0}, 0, INT64_MAX, .flags = D },
+    { "offset",         "Initial byte offset",                              OFFSET(offset),         AV_OPT_TYPE_INT64, {.i64 = 0}, 0, INT64_MAX, .flags = D },
+    { "cache_key",      "Override the hash used to identify the cache file",OFFSET(cache_key),      AV_OPT_TYPE_STRING, {.str = NULL}, .flags = D },
     {0},
 };
 

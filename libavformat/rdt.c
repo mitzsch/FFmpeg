@@ -317,6 +317,8 @@ rdt_parse_packet (AVFormatContext *ctx, PayloadContext *rdt, AVStream *st,
             return res;
         if (res > 0) {
             if (st->codecpar->codec_id == AV_CODEC_ID_AAC) {
+                if (len - pos > sizeof(rdt->buffer))
+                    return AVERROR_INVALIDDATA;
                 memcpy (rdt->buffer, buf + pos, len - pos);
                 rdt->rmctx->pb = avio_alloc_context (rdt->buffer, len - pos, 0,
                                                     NULL, NULL, NULL, NULL);
@@ -440,6 +442,8 @@ rdt_parse_sdp_line (AVFormatContext *s, int st_index,
                            (count - rdt->nb_rmst) * sizeof(*rdt->rmst));
                     rdt->nb_rmst = count;
                 }
+                if (rdt->rmst[s->streams[n]->index])
+                    continue;
                 rdt->rmst[s->streams[n]->index] = ff_rm_alloc_rmstream();
                 if (!rdt->rmst[s->streams[n]->index])
                     return AVERROR(ENOMEM);

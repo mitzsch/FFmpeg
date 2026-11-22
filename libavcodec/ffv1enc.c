@@ -42,6 +42,19 @@
 #include "ffv1.h"
 #include "ffv1enc.h"
 
+#define REMAP_MAX_LOG2_MUL_COUNT 10
+#define REMAP_MAX_MUL_COUNT      (1 << REMAP_MAX_LOG2_MUL_COUNT)
+#define REMAP_MAX_LOG2_MUL       22
+#define FFV1_MAX_MUL_COUNT       4096
+
+/* Scratch buffers for 32-bit float remap, kept off the stack (each ~152 KiB).
+ * Allocated per slice only when a 32-bit remap is actually used. */
+struct FFV1RemapBuffers {
+    int   mul_all[REMAP_MAX_LOG2_MUL_COUNT + 1][REMAP_MAX_MUL_COUNT + 1];
+    float score_tab_all[REMAP_MAX_MUL_COUNT + 1][REMAP_MAX_LOG2_MUL + 1];
+    int   mul[FFV1_MAX_MUL_COUNT + 1];
+};
+
 static const int8_t quant5_10bit[256] = {
      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,  1,
      1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,
@@ -250,7 +263,7 @@ static inline void put_vlc_symbol(PutBitContext *pb, VlcState *const state,
         i += i;
     }
 
-    av_assert2(k <= 16);
+    av_assert2(k <= 19);
 
     code = v ^ ((2 * state->drift + state->count) >> 31);
 
@@ -1053,6 +1066,18 @@ static av_cold int encode_init_internal(AVCodecContext *avctx)
         if ((ret = ff_ffv1_encode_determine_slices(avctx)) < 0)
             return ret;
 
+        /* The Golomb-Rice escape code is 12 + bits long and put_bits()
+         * writes at most 31 bits, so bits must stay below 20. The RCT
+         * planes of remapped 32bit floats need log2 of the summed remap
+         * counts of two planes, which a slice of at most 1<<18 pixels
+         * keeps within 19 bits. */
+        if (s->ac == AC_GOLOMB_RICE && s->bits_per_raw_sample == 32 &&
+            ((avctx->width  + s->num_h_slices - 1) / s->num_h_slices) *
+            (int64_t)((avctx->height + s->num_v_slices - 1) / s->num_v_slices) > 1 << 18) {
+            av_log(avctx, AV_LOG_ERROR, "Slices larger than 262144 pixels are not supported with 32bit floats and the Golomb-Rice coder\n");
+            return AVERROR(EINVAL);
+        }
+
         if ((ret = ff_ffv1_write_extradata(avctx)) < 0)
             return ret;
     }
@@ -1072,6 +1097,11 @@ static av_cold int encode_init_internal(AVCodecContext *avctx)
         }
         av_assert0(s->remap_mode >= 0);
         if (s->remap_mode) {
+            if (s->bits_per_raw_sample == 32) {
+                sc->remap_buf = av_mallocz(sizeof(*sc->remap_buf));
+                if (!sc->remap_buf)
+                    return AVERROR(ENOMEM);
+            }
             for (int p = 0; p < 1 + 2*s->chroma_planes + s->transparency ; p++) {
                 if (s->bits_per_raw_sample == 32) {
                     sc->unit[p] = av_malloc_array(sc->slice_width, sc->slice_height * sizeof(**sc->unit));
@@ -1149,10 +1179,22 @@ static void encode_slice_header(FFV1Context *f, FFV1SliceContext *sc)
     }
 }
 
+#define NB_Y_COEFF 15
+
+/* Each contribution to the partial sums is at most 98303,
+ * so up to 4096 of them fit in an int. */
+static av_always_inline void accumulate_rct_stats(int64_t stat[NB_Y_COEFF],
+                                                 int partial[NB_Y_COEFF])
+{
+    for (int i = 0; i < NB_Y_COEFF; i++) {
+        stat[i] += partial[i];
+        partial[i] = 0;
+    }
+}
+
 static void choose_rct_params(const FFV1Context *f, FFV1SliceContext *sc,
                               const uint8_t *src[3], const int stride[3], int w, int h)
 {
-#define NB_Y_COEFF 15
     static const int rct_y_coeff[15][2] = {
         {0, 0}, //      4G
         {1, 1}, //  R + 2G + B
@@ -1172,7 +1214,8 @@ static void choose_rct_params(const FFV1Context *f, FFV1SliceContext *sc,
         {1, 0}, //  R + 3G
     };
 
-    int stat[NB_Y_COEFF] = {0};
+    int64_t stat[NB_Y_COEFF] = {0};
+    int partial[NB_Y_COEFF] = {0};
     int x, y, i, p, best;
     int16_t *sample[3];
     int lbd = f->bits_per_raw_sample <= 8;
@@ -1220,7 +1263,7 @@ static void choose_rct_params(const FFV1Context *f, FFV1SliceContext *sc,
                 bb -= bg;
 
                 for (i = 0; i<NB_Y_COEFF; i++) {
-                    stat[i] += FFABS(bg + ((br*rct_y_coeff[i][0] + bb*rct_y_coeff[i][1])>>2));
+                    partial[i] += FFABS(bg + ((br*rct_y_coeff[i][0] + bb*rct_y_coeff[i][1])>>2));
                 }
 
             }
@@ -1231,7 +1274,10 @@ static void choose_rct_params(const FFV1Context *f, FFV1SliceContext *sc,
             lastr = r;
             lastg = g;
             lastb = b;
+            if ((x & 4095) == 4095)
+                accumulate_rct_stats(stat, partial);
         }
+        accumulate_rct_stats(stat, partial);
     }
 
     best = 0;
@@ -1252,7 +1298,8 @@ static void choose_rct_params_bayer(const FFV1Context *f, FFV1SliceContext *sc,
         { 0, 0 }, { 1, 1 }, { 2, 2 }, { 0, 2 }, { 2, 0 }, { 4, 0 }, { 0, 4 }, { 0, 3 },
         { 3, 0 }, { 3, 1 }, { 1, 3 }, { 1, 2 }, { 2, 1 }, { 0, 1 }, { 1, 0 },
     };
-    int stat[NB_Y_COEFF] = {0};
+    int64_t stat[NB_Y_COEFF] = {0};
+    int partial[NB_Y_COEFF] = {0};
     int16_t *sample[3];
     int i, best;
 
@@ -1286,7 +1333,7 @@ static void choose_rct_params_bayer(const FFV1Context *f, FFV1SliceContext *sc,
                 bb -= bgm;
 
                 for (i = 0; i < NB_Y_COEFF; i++)
-                    stat[i] += FFABS(bgm + ((br*rct_y_coeff[i][0] + bb*rct_y_coeff[i][1]) >> 2));
+                    partial[i] += FFABS(bgm + ((br*rct_y_coeff[i][0] + bb*rct_y_coeff[i][1]) >> 2));
             }
             sample[0][x] = agm;
             sample[1][x] = ab;
@@ -1295,7 +1342,10 @@ static void choose_rct_params_bayer(const FFV1Context *f, FFV1SliceContext *sc,
             last_gm = gm;
             last_b  = b;
             last_r  = r;
+            if ((x & 4095) == 4095)
+                accumulate_rct_stats(stat, partial);
         }
+        accumulate_rct_stats(stat, partial);
     }
 
     best = 0;
@@ -1399,7 +1449,7 @@ static int encode_float32_remap_segment(FFV1SliceContext *sc,
 {
     const int pixel_num = sc->slice_width * sc->slice_height;
     uint8_t state[2][3][32];
-    int mul[4096+1];
+    int *mul = sc->remap_buf->mul;
     RangeCoder rc = sc->c;
     int lu = 0;
     int run = 0;
@@ -1521,13 +1571,16 @@ static void encode_float32_remap(FFV1Context *f, FFV1SliceContext *sc,
     const int stair_mode          = ((int[]){  0,  0,  0,  1,  0,   0})[f->remap_optimizer];
     const int magic_log2          = ((int[]){  1,  1,  1,  1,  0,   0})[f->remap_optimizer];
 
+    av_assert0(max_log2_mul_count <= REMAP_MAX_LOG2_MUL_COUNT);
+    av_assert0(max_log2_mul       <= REMAP_MAX_LOG2_MUL);
+
     for (int p= 0; p < 1 + 2*f->chroma_planes + f->transparency; p++) {
         int best_log2_mul_count = 0;
-        float score_sum[11] = {0};
-        int mul_all[11][1025];
-
+        float score_sum[REMAP_MAX_LOG2_MUL_COUNT + 1] = {0};
+        int (*mul_all)[REMAP_MAX_MUL_COUNT + 1] = sc->remap_buf->mul_all;
+        float (*score_tab_all)[REMAP_MAX_LOG2_MUL + 1] = sc->remap_buf->score_tab_all;
         for (int log2_mul_count= 0; log2_mul_count <= max_log2_mul_count; log2_mul_count += log2_mul_count_step) {
-            float score_tab_all[1025][23] = {0};
+            memset(score_tab_all, 0, sizeof(sc->remap_buf->score_tab_all));
             int64_t last_val = -1;
             int *mul_tab = mul_all[log2_mul_count];
             int last_mul_index = -1;

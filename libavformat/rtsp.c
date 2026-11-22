@@ -681,8 +681,17 @@ static void sdp_parse_line(AVFormatContext *s, SDPParseState *s1,
                 rt->transport = RTSP_TRANSPORT_RDT;
         } else if (av_strstart(p, "SampleRate:integer;", &p) &&
                    s->nb_streams > 0) {
-            st = s->streams[s->nb_streams - 1];
-            st->codecpar->sample_rate = atoi(p);
+            long sample_rate;
+
+            errno = 0;
+            sample_rate = strtol(p, NULL, 10);
+            if (errno == ERANGE || sample_rate <= 0 || sample_rate > INT_MAX) {
+                av_log(s, AV_LOG_WARNING,
+                       "Invalid SampleRate %ld in SDP, ignoring\n", sample_rate);
+            } else {
+                st = s->streams[s->nb_streams - 1];
+                st->codecpar->sample_rate = sample_rate;
+            }
         } else if (av_strstart(p, "crypto:", &p) && s->nb_streams > 0) {
             // RFC 4568
             rtsp_st = rt->rtsp_streams[rt->nb_rtsp_streams - 1];
@@ -734,7 +743,7 @@ static void sdp_parse_line(AVFormatContext *s, SDPParseState *s1,
             if (s->nb_streams > 0) {
                 rtsp_st = rt->rtsp_streams[rt->nb_rtsp_streams - 1];
 
-                if (rt->server_type == RTSP_SERVER_REAL)
+                if (rt->server_type == RTSP_SERVER_REAL && rtsp_st->stream_index >= 0)
                     ff_real_parse_sdp_a_line(s, rtsp_st->stream_index, p);
 
                 if (rtsp_st->dynamic_handler &&
@@ -1472,6 +1481,8 @@ int ff_rtsp_send_cmd_with_content_async(AVFormatContext *s,
 
     if (!rt->rtsp_hd_out)
         return AVERROR(ENOTCONN);
+    if (strpbrk(url, "\r\n"))
+        return AVERROR(EINVAL);
 
     /* Add in RTSP headers */
     out_buf = buf;

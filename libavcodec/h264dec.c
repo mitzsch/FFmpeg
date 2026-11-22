@@ -31,7 +31,6 @@
 
 #include "libavutil/attributes.h"
 #include "libavutil/avassert.h"
-#include "libavutil/emms.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
@@ -133,8 +132,6 @@ void ff_h264_draw_horiz_band(const H264Context *h, H264SliceContext *sl,
     offset[2] = (y >> vshift) * src->linesize[1];
     for (int i = 3; i < AV_NUM_DATA_POINTERS; i++)
         offset[i] = 0;
-
-    emms_c();
 
     avctx->draw_horiz_band(avctx, src, offset,
                            y, h->picture_structure, height);
@@ -950,8 +947,13 @@ static int output_frame(H264Context *h, AVFrame *dst, H264Picture *srcp)
     if (ret < 0)
         return ret;
 
-    if (srcp->needs_fg && (ret = av_frame_copy_props(dst, srcp->f)) < 0)
-        return ret;
+    if (srcp->needs_fg) {
+        /* f_grain got its own copy of the side data on allocation */
+        av_frame_side_data_free(&dst->side_data, &dst->nb_side_data);
+        ret = av_frame_copy_props(dst, srcp->f);
+        if (ret < 0)
+            return ret;
+    }
 
     if (srcp->decode_error_flags) {
         atomic_int *decode_error = srcp->decode_error_flags;

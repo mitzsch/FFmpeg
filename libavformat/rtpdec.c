@@ -632,7 +632,7 @@ static int rtp_add_sr_sidedata(RTPDemuxContext *s, AVPacket *pkt) {
  */
 static void finalize_packet(RTPDemuxContext *s, AVPacket *pkt, uint32_t timestamp)
 {
-    if (s->pending_sr) {
+    if (s->pending_sr && pkt->size) {
         int ret = rtp_add_sr_sidedata(s, pkt);
         if (ret < 0)
             av_log(s->ic, AV_LOG_WARNING, "rtpdec: failed to add SR sidedata\n");
@@ -933,8 +933,10 @@ int ff_rtp_parse_packet(RTPDemuxContext *s, AVPacket *pkt,
         return -1;
     rv = rtp_parse_one_packet(s, pkt, bufptr, len);
     s->prev_ret = rv;
-    while (rv < 0 && has_next_packet(s))
+    while (rv < 0 && has_next_packet(s)) {
         rv = rtp_parse_queued_packet(s, pkt);
+        s->prev_ret = rv;
+    }
     return rv ? rv : has_next_packet(s);
 }
 
